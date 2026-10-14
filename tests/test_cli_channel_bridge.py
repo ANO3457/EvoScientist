@@ -255,9 +255,46 @@ class TestHitlPromptBridge:
 
         channel_mod._approval_policy.grant_session("fake:chat1")
 
-        assert channel_mod.channel_hitl_prompt(
-            [{"name": "execute"}], msg
-        ).decisions == [{"type": "approve"}]
+        outcome = channel_mod.channel_hitl_prompt([{"name": "execute"}], msg)
+        assert outcome.decisions == [{"type": "approve"}]
+        assert outcome.session_granted is True
+        assert outcome.grant_in_force is True
+
+    def test_config_auto_answer_is_not_reported_as_a_grant(self, monkeypatch):
+        monkeypatch.setattr(
+            interaction_mod,
+            "config_policy_snapshot",
+            lambda reqs: ([{"type": "approve"}], {}),
+        )
+        monkeypatch.setattr(channel_mod, "_bus_loop", None)
+        msg = ChannelMessage(
+            msg_id="m1",
+            content="",
+            sender="u1",
+            channel_type="fake",
+            chat_id="chat1",
+            bus_ref=object(),
+        )
+        outcome = channel_mod.channel_hitl_prompt([{"name": "execute"}], msg)
+        assert outcome.decisions == [{"type": "approve"}]
+        assert outcome.session_granted is False
+        assert outcome.grant_in_force is False
+
+    def test_channel_session_granted_is_per_chat(self):
+        def _msg(chat_id):
+            return ChannelMessage(
+                msg_id="m1",
+                content="",
+                sender="u1",
+                channel_type="fake",
+                chat_id=chat_id,
+                bus_ref=object(),
+            )
+
+        assert channel_mod.channel_session_granted(_msg("chat1")) is False
+        channel_mod._approval_policy.grant_session("fake:chat1")
+        assert channel_mod.channel_session_granted(_msg("chat1")) is True
+        assert channel_mod.channel_session_granted(_msg("chat2")) is False
 
     def test_approve_round_trip(self, monkeypatch):
         # Force the manual-prompt path (no config auto-approve).

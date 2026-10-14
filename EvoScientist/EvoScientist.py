@@ -1203,31 +1203,55 @@ def _get_default_middleware(
 
 
 def _hitl_when(request) -> bool:
-    """HITL ``when`` predicate: interrupt unless the run is suppressed.
+    """HITL ``when`` predicate: interrupt unless the call says not to.
 
-    Reads ``configurable.hitl_suppressed`` off the run's own config, carried
-    on ``request.runtime.config`` — langchain builds the runtime for both its
+    A call skips the interrupt when its config carries
+    ``configurable.hitl_suppressed`` (an unattended run, backend-guarded) or
+    ``configurable.hitl_approve_all`` (the session's human "approve all").
+    Both are read off the run's own config, carried on
+    ``request.runtime.config`` — langchain builds the runtime for both its
     batch (``tool=None``) and per-call request shapes, so the request always
     carries it (batch mode falls back to an empty config when langgraph has
     none, which arms — same as before). Falls back to the ambient
     ``get_config()`` when there is no runtime, and arms (``True``) when there
-    is no config at all: outside a run there is nothing to suppress.
+    is no config at all: outside a run there is nothing to skip.
+
+    The predicate is evaluated again when a parked approval is resumed, and a
+    call that skips then drops that resume's decisions. Clients therefore send
+    the grant with an approval answer only when the grant itself produced it
+    (all approve; never the reply that grants), and otherwise with a
+    question's answer or a turn's first call while a grant is in force.
+    """
+    from .backends import is_hitl_approve_all
+
+    config = getattr(getattr(request, "runtime", None), "config", None)
+    return _hitl_when_served(request) and not is_hitl_approve_all(config)
+
+
+def _hitl_when_served(request) -> bool:
+    """``_hitl_when`` for the graph a server serves: only ``hitl_suppressed`` skips.
+
+    No server run has a use for the session grant (the server gateway drops
+    it), so a client that sends the key anyway is still asked.
     """
     from .backends import is_hitl_suppressed
 
-    runtime = getattr(request, "runtime", None)
-    config = getattr(runtime, "config", None)
+    config = getattr(getattr(request, "runtime", None), "config", None)
     return not is_hitl_suppressed(config)
 
 
-def _build_hitl_interrupt_on() -> dict[str, "InterruptOnConfig"]:
+def _build_hitl_interrupt_on(
+    *, honor_approve_all: bool
+) -> dict[str, "InterruptOnConfig"]:
     """Return the always-armed HITL config for ``create_deep_agent``.
 
-    The main graph is *always* armed; per-run suppression is delegated to the
-    :func:`_hitl_when` predicate rather than keyed on ``auto_approve`` at
-    construction — otherwise a graph built once for an unattended session would
-    silently disable HITL for a later attended session on the same keepalive
-    server. Passing it to ``create_deep_agent`` (not ``HumanInTheLoopMiddleware``)
+    The main graph is *always* armed; per-run suppression is left to the
+    ``when`` predicate rather than keyed on ``auto_approve`` at construction:
+    :func:`_hitl_when` (``honor_approve_all``, the CLI agent) also skips under
+    the session grant, :func:`_hitl_when_served` (a served graph) only under
+    ``hitl_suppressed``. Otherwise a graph built once for an unattended session
+    would silently disable HITL for a later attended session on the same
+    keepalive server. Passing it to ``create_deep_agent`` (not ``HumanInTheLoopMiddleware``)
     lets declarative sub-agents inherit it while ``AsyncSubAgent`` specs do not —
     so async agents can't hang on an approval nobody can deliver.
     """
@@ -1236,7 +1260,7 @@ def _build_hitl_interrupt_on() -> dict[str, "InterruptOnConfig"]:
     return {
         tool: InterruptOnConfig(
             allowed_decisions=["approve", "edit", "reject", "respond"],
-            when=_hitl_when,
+            when=_hitl_when if honor_approve_all else _hitl_when_served,
         )
         for tool in HITL_INTERRUPT_ON
     }
@@ -1267,7 +1291,7 @@ def _get_default_agent():
 
         _EvoScientist_agent = create_deep_agent(
             **kwargs,
-            interrupt_on=_build_hitl_interrupt_on(),
+            interrupt_on=_build_hitl_interrupt_on(honor_approve_all=False),
         ).with_config({"recursion_limit": cfg.recursion_limit})
     return _EvoScientist_agent
 
@@ -1421,5 +1445,5 @@ def create_cli_agent(
     return create_deep_agent(
         **kwargs,
         checkpointer=checkpointer,
-        interrupt_on=_build_hitl_interrupt_on(),
+        interrupt_on=_build_hitl_interrupt_on(honor_approve_all=True),
     ).with_config({"recursion_limit": cfg.recursion_limit})

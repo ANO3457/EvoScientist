@@ -1218,6 +1218,7 @@ def cmd_interactive(
                             interactive=True,
                             metadata=meta,
                             configurable_extra=_run_configurable_extra("thread"),
+                            approve_all_at_start=_ch_mod.channel_session_granted(msg),
                             on_thinking=_send_thinking_to_channel,
                             on_todo=_send_todo_to_channel,
                             on_file_write=_send_media_to_channel,
