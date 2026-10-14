@@ -1500,12 +1500,32 @@ class TestRunInputRubric:
         from EvoScientist.stream.events import build_agent_stream_input
 
         without = await build_agent_stream_input("hi")
-        assert without == {"messages": [{"role": "user", "content": "hi"}]}
+        assert without == {
+            "messages": [{"role": "user", "content": "hi"}],
+            "goal_request": None,
+        }
         with_rubric = await build_agent_stream_input("hi", rubric="- a")
         assert with_rubric == {
             "messages": [{"role": "user", "content": "hi"}],
+            "goal_request": None,
             "rubric": "- a",
         }
+
+    async def test_every_message_clears_a_goal_request_left_on_the_thread(self):
+        """A request whose run never finished must not take over this message."""
+        from EvoScientist.stream.events import build_agent_stream_input
+
+        run_input = await build_agent_stream_input("hi")
+        assert "goal_request" in run_input
+        assert run_input["goal_request"] is None
+
+    async def test_a_goal_request_travels_without_a_message(self):
+        from EvoScientist.stream.events import build_agent_stream_input
+
+        request = {"kind": "create", "id": "r1", "objective": "ship it"}
+        run_input = await build_agent_stream_input("", goal_request=request)
+        assert run_input == {"messages": [], "goal_request": request}
+        assert run_input["goal_request"] is not request
 
     async def test_resume_command_is_passed_through_untouched(self):
         from EvoScientist.stream.events import build_agent_stream_input
@@ -2094,7 +2114,9 @@ class TestModelRetryRollback:
         retry = self._retries(out)[0]
         assert retry["instance_id"] != ""
         assert retry["subagent"] == "rubric_grader"
-        assert retry["discarded"]["text_chars"] == len("grading")
+        # The grader's output was never shown, so there is nothing to take back.
+        assert retry["discarded"]["text_chars"] == 0
+        assert [e["type"] for e in out if e["type"].startswith("subagent")] == []
         assert self._done(out)["response"] == "Main answer."
 
     async def test_subagent_retry_is_keyed_by_raw_namespace(self):

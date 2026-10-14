@@ -120,6 +120,8 @@ class StreamState:
         # {"tasks": n, "processes": n} while grading waits for background work.
         self.rubric_deferred: dict | None = None
         self.model_retries: list[dict] = []
+        # What happened to the thread's goal during this turn, in order.
+        self.goal_events: list[dict] = []
         # Cached Markdown object for Rich CLI display (avoids O(n²) re-parsing)
         self._cached_md_text: str = ""
         self._cached_md: object | None = None
@@ -324,6 +326,9 @@ class StreamState:
             self.model_retries.append(event)
         elif event_type == "model_output_discarded":
             self.apply_discard(event)
+        elif event_type == "goal_state":
+            self.goal_events.append(event)
+
         elif event_type == "rubric_evaluation_start":
             self.rubric_checking = True
             self.rubric_deferred = None
@@ -426,6 +431,9 @@ class StreamState:
         Returns:
             A ``ResearchPhase`` enum member.
         """
+        if self.rubric_checking:
+            # The grader works unseen, after the agent's own thinking ended.
+            return ResearchPhase.RESEARCHING
         if self.is_thinking:
             return ResearchPhase.THINKING
         if self.has_pending_work():
@@ -462,6 +470,7 @@ class StreamState:
             "rubric_checking": self.rubric_checking,
             "rubric_deferred": self.rubric_deferred,
             "model_retries": self.model_retries,
+            "goal_events": self.goal_events,
         }
 
 
