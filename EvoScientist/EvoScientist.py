@@ -324,6 +324,8 @@ def _inject_subagent_middleware(
     cfg=None,
     chat_model=None,
     backend=None,
+    unattended: bool = False,
+    model_retry_honors_run_key: bool = True,
 ) -> None:
     """Ensure every subagent gets error handling and context management middleware.
 
@@ -359,6 +361,7 @@ def _inject_subagent_middleware(
         create_runtime_context_middleware,
         default_memory_scheduler,
     )
+    from .middleware.model_retry import ModelCallBoundaryMiddleware
 
     cfg = cfg if cfg is not None else _ensure_config()
     memory_controls = MemoryControls.from_config(cfg)
@@ -380,9 +383,13 @@ def _inject_subagent_middleware(
             memory_scheduler=memory_scheduler,
         )
         middleware = [
-            # Outermost — catches provider-SDK exceptions from the
-            # model call (including inner middlewares) and normalizes
-            # them into a non-dataclass envelope wrapper before
+            # Retries transient provider failures around everything below.
+            _model_retry_middleware(
+                cfg, unattended=unattended, honor_run_key=model_retry_honors_run_key
+            ),
+            # Right inside the retry layer — catches provider-SDK exceptions
+            # from the model call (including inner middlewares) and
+            # normalizes them into a non-dataclass envelope wrapper before
             # anything downstream sees them.
             ErrorNormalizationMiddleware(),
             # Sync subagents replay their own history to strict providers too.
@@ -402,6 +409,9 @@ def _inject_subagent_middleware(
             ToolErrorHandlerMiddleware(),
             TodoListMiddleware(),
             ContextOverflowMapperMiddleware(),
+            # Inside the retry layer: marks each provider call for the
+            # stream decoder.
+            ModelCallBoundaryMiddleware(),
         ]
         if memory_controls.memory_enabled:
             middleware.append(memory_middleware)
@@ -890,6 +900,32 @@ def _get_default_backend(
     )
 
 
+def _model_retry_middleware(
+    cfg=None, *, unattended: bool = False, honor_run_key: bool = True
+):
+    """The retry layer for one middleware list; always mounted, the budget may be 0."""
+    from .middleware.model_retry import ModelRetryMiddleware
+
+    cfg = cfg if cfg is not None else _ensure_config()
+    tier_unattended = unattended or bool(getattr(cfg, "auto_mode", False))
+    budget = (
+        cfg.auto_mode_retry_wait_seconds
+        if tier_unattended
+        else cfg.model_retry_wait_seconds
+    )
+    # The config puts a malformed value back to its default itself; this only
+    # meets an object built some other way, where both readers agree on no retry.
+    try:
+        budget = max(0, int(budget))
+    except (TypeError, ValueError, OverflowError):
+        budget = 0
+    return ModelRetryMiddleware(
+        wait_budget_seconds=budget,
+        unattended=tier_unattended,
+        honor_run_key=honor_run_key,
+    )
+
+
 def _get_default_middleware(
     *,
     workspace: Workspace,
@@ -900,6 +936,8 @@ def _get_default_middleware(
     backend=None,
     memory_source_agent: str = "EvoScientist",
     events: "MiddlewareEventSink | None" = None,
+    unattended: bool = False,
+    model_retry_honors_run_key: bool = True,
 ):
     """Build the default middleware list.
 
@@ -964,6 +1002,7 @@ def _get_default_middleware(
     # the server gateway can render them client-side.
     from .middleware.events import resolve_middleware_event_sink
     from .middleware.model_fallback import seed_fallback_chain
+    from .middleware.model_retry import ModelCallBoundaryMiddleware
 
     events = resolve_middleware_event_sink(
         events, for_async_subagent=for_async_subagent
@@ -1026,10 +1065,15 @@ def _get_default_middleware(
 
             tool_selector_model = get_chat_model(model=aux_model, provider=aux_provider)
     mw = [
-        # Outermost — catches provider-SDK exceptions from the model
-        # call (including exceptions surfaced through inner
-        # middlewares) and normalizes them into a non-dataclass
-        # envelope wrapper before anything downstream sees them.
+        # Retries transient provider failures around everything below: one
+        # attempt is the primary model plus the fallback chain.
+        _model_retry_middleware(
+            cfg, unattended=unattended, honor_run_key=model_retry_honors_run_key
+        ),
+        # Right inside the retry layer — catches provider-SDK exceptions
+        # from the model call (including exceptions surfaced through inner
+        # middlewares) and normalizes them into a non-dataclass envelope
+        # wrapper before anything downstream sees them.
         ErrorNormalizationMiddleware(),
         ToolHistoryRepairMiddleware(),
         ConfigurableModelMiddleware(),
@@ -1050,6 +1094,9 @@ def _get_default_middleware(
             timeout=cfg.code_interpreter_timeout,
             max_result_chars=cfg.code_interpreter_max_result_chars,
         ),
+        # Inside the fallback chain and the tool selector: marks each
+        # provider call for the stream decoder.
+        ModelCallBoundaryMiddleware(),
     ]
     if cfg.enable_scheduler and not for_async_subagent:
         mw.append(create_scheduler_middleware(workspace))
@@ -1146,6 +1193,9 @@ def _get_default_middleware(
                 task_status=live_task_status,
                 process_status=poll_status,
                 server_available=dev_server_reachable,
+                model_retry=_model_retry_middleware(
+                    cfg, unattended=unattended, honor_run_key=model_retry_honors_run_key
+                ),
             )
         )
 
