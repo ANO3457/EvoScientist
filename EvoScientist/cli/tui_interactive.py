@@ -41,6 +41,11 @@ from ..gateway import (
     create_runtime_gateways_for_config,
 )
 from ..paths import DATA_DIR, SessionDirs, Workspace
+from ..rubric_session import (
+    acknowledge_applied,
+    merge_configurable_extra,
+    thread_run_extra,
+)
 from ..sessions import get_checkpointer
 from ..stream.state import ResearchPhase, StreamState
 from ._agent_loader import BackgroundAgentLoader, MCPProgressTracker
@@ -700,6 +705,8 @@ def run_textual_interactive(
             self._queued_messages: list[
                 str
             ] = []  # queued messages to send after current turn
+            # Status-bar badge per thread: which acceptance checklists it holds.
+            self._rubric_badges: dict[str, str | None] = {}
             self._comp_items: list = []
             self._comp_index: int = -1
             self._comp_last_height: int = 0
@@ -760,6 +767,12 @@ def run_textual_interactive(
                 self._channel_runtime.bind(agent, self._conversation_tid)
             self._finish_loader_widget()
             self._render_status()
+            # The start-up refresh ran without an agent: read the thread's
+            # checklists now that state can be read (the badge only; a turn
+            # may already be building the rest of the status bar).
+            task = asyncio.ensure_future(self._refresh_rubric_badge())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         def _on_agent_load_failure(self, exc: BaseException) -> None:
             self._append_system(f"Agent failed to load: {exc}", style="red")
@@ -1357,6 +1370,8 @@ def run_textual_interactive(
                     skip_user_message=True,
                     resolve_mentions=False,
                     thread_id_override=target_thread_id,
+                    # A notifier turn only finishes a grading the thread deferred.
+                    rubric_mode="followup",
                 )
                 if _ch_mod.publish_to_channel_origin(effective_tid, response or ""):
                     # Mirror a normal channel turn's closing "Replied to" line
@@ -1652,6 +1667,7 @@ def run_textual_interactive(
             channel_ask_user_fn: Callable[[dict], dict] | None = None,
             cancel_scope: str | None = None,
             thread_id_override: str | None = None,
+            rubric_mode: str | None = "thread",
         ) -> str:
             """Stream agent events and mount widgets.  Returns response text.
 
@@ -1935,8 +1951,11 @@ def run_textual_interactive(
                 try:
                     _anchor_engaged = False
                     _active_teams = list(self._channel_runtime.active_teams)
-                    _configurable_extra = (
-                        {"active_teams": _active_teams} if _active_teams else None
+                    _configurable_extra = merge_configurable_extra(
+                        {"active_teams": _active_teams} if _active_teams else None,
+                        self._rubric_configurable_extra(
+                            thread_id_override or self._conversation_tid, rubric_mode
+                        ),
                     )
                     events = iter_with_stream_cancel(
                         graph_gateway.stream_events(
@@ -2249,6 +2268,41 @@ def run_textual_interactive(
                             sa_w = _get_sa_widget(instance_id, event.get("name", ""))
                             if sa_w is not None:
                                 sa_w.finalize()
+
+                        elif event_type == "rubric_evaluation_start":
+                            passes = int(event.get("iteration") or 0) + 1
+                            await container.mount(
+                                SystemMessage(
+                                    f"rubric: checking acceptance criteria (pass {passes})",
+                                    msg_style="dim",
+                                )
+                            )
+
+                        elif event_type == "rubric_evaluation":
+                            from ..stream.display import rubric_result_lines
+
+                            if event.get("result") == "needs_revision":
+                                # The revision must land below its verdict, and
+                                # the draft must not come back as narration.
+                                await _convert_assistant_to_narration()
+                                state.latest_text = ""
+                            for line_text, line_style in rubric_result_lines(event):
+                                await container.mount(
+                                    SystemMessage(line_text, msg_style=line_style)
+                                )
+
+                        elif event_type == "rubric_evaluation_deferred":
+                            from ..stream.display import rubric_deferred_text
+
+                            await container.mount(
+                                SystemMessage(
+                                    rubric_deferred_text(
+                                        int(event.get("tasks") or 0),
+                                        int(event.get("processes") or 0),
+                                    ),
+                                    msg_style="yellow",
+                                )
+                            )
 
                         elif event_type == "panel_dispatch_start":
                             eval_id = event.get("eval_id", "") or "_unbatched"
@@ -2730,6 +2784,7 @@ def run_textual_interactive(
             await enqueue_bg_process_completions_from_state(
                 graph_gateway, _close_target, _close_tid
             )
+            await self._acknowledge_rubric(_close_tid)
             return response
 
         async def _run_turn(
@@ -2739,6 +2794,7 @@ def run_textual_interactive(
             skip_user_message: bool = False,
             resolve_mentions: bool = True,
             thread_id_override: str | None = None,
+            rubric_mode: str | None = "thread",
         ) -> str:
             """Handle a user turn: stream agent response with widgets.
 
@@ -2801,6 +2857,7 @@ def run_textual_interactive(
                     file_warnings=file_warnings,
                     skip_user_message=skip_user_message,
                     thread_id_override=thread_id_override,
+                    rubric_mode=rubric_mode,
                 )
             except asyncio.CancelledError:
                 cancelled = True
@@ -3485,7 +3542,9 @@ def run_textual_interactive(
                 parsed = cmd_manager.resolve(command)
                 cmd = None
                 cmd_args: list[str] = []
-                agent = None
+                # An already-loaded agent is handed over without waiting; only
+                # commands that need one block on the load.
+                agent = self._agent_loader.agent
                 if parsed is not None:
                     cmd, cmd_args = parsed
                 if cmd is not None and cmd.needs_agent(cmd_args):
@@ -3509,12 +3568,9 @@ def run_textual_interactive(
                 if await cmd_manager.execute(command, ctx):
                     if cmd is None:
                         return
-                    await _sync_tui_command_completion(
-                        self,
-                        ctx,
-                        self._agent_loader.agent,
-                        cmd,
-                    )
+                    # Compared with the agent the command was handed: /new and
+                    # /resume restart the load, which empties the loader.
+                    await _sync_tui_command_completion(self, ctx, agent, cmd)
                     return
 
                 self._append_system(f"Unknown command: {command}", style="yellow")
@@ -3715,6 +3771,34 @@ def run_textual_interactive(
             if reset_streaming_text:
                 self._status_streaming_text = ""
             self._rebuild_status_snapshot()
+            await self._acknowledge_rubric(self._conversation_tid)
+
+        def _rubric_configurable_extra(
+            self, thread_id: str | None, mode: str | None
+        ) -> dict[str, Any] | None:
+            """The run marker and pending ``/rubric`` operations for *thread_id*."""
+            return thread_run_extra(
+                self._channel_runtime.rubric,
+                self._runtime_gateways.graph_gateway,
+                thread_id=thread_id,
+                current_thread_id=self._conversation_tid,
+                mode=mode,
+            )
+
+        async def _refresh_rubric_badge(self) -> None:
+            await self._acknowledge_rubric(self._conversation_tid)
+            self._render_status()
+
+        async def _acknowledge_rubric(self, thread_id: str | None) -> None:
+            """Drop operations the thread applied; refresh its status-bar badge."""
+            await acknowledge_applied(
+                self._channel_runtime.rubric,
+                self._rubric_badges,
+                self._runtime_gateways.graph_gateway,
+                agent=self._agent_loader.agent,
+                dirs=self._dirs,
+                thread_id=thread_id,
+            )
 
         def _set_status_usage_baseline(self, input_tokens: int) -> None:
             """Promote the latest real prompt usage into the status-bar base."""
@@ -3851,6 +3935,7 @@ def run_textual_interactive(
                 self._status_snapshot,
                 self._status_started_at,
                 remaining_width,
+                rubric_badge=self._rubric_badges.get(self._conversation_tid),
             )
             line = Text(no_wrap=True, overflow="crop")
             line.append_text(hint)

@@ -520,6 +520,11 @@ def cmd_interactive(
         console.print(Text("\u2500" * width, style="dim"))
 
     from ..commands.base import ChannelRuntime, active_teams_configurable_extra
+    from ..rubric_session import (
+        acknowledge_applied,
+        merge_configurable_extra,
+        thread_run_extra,
+    )
 
     channel_runtime = ChannelRuntime()
 
@@ -543,9 +548,23 @@ def cmd_interactive(
                 f"[red]failed:[/red] {escape(detail)}"
             )
 
+    def _on_agent_loaded(agent: Any) -> None:
+        # The start-up refresh ran without an agent: read the thread's
+        # checklists now that state can be read (the badge only; a turn may
+        # already be building the rest of the status bar).
+        try:
+            task = asyncio.get_running_loop().create_task(
+                _acknowledge_rubric(agent, state["thread_id"])
+            )
+        except RuntimeError:
+            return
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
     agent_loader = BackgroundAgentLoader(
         _load_agent,
         on_progress=_on_mcp_progress,
+        on_success=_on_agent_loaded,
     )
 
     # One frontend event sink for the whole session — injected into the agent's
@@ -575,6 +594,8 @@ def cmd_interactive(
         "status_snapshot": make_empty_status_snapshot(model),
         "status_streaming_text": "",
         "status_last_input_tokens": None,
+        # Status-bar badge per thread: which acceptance checklists it holds.
+        "rubric_badges": {},
     }
 
     def _on_status_after_compact(input_tokens: int) -> None:
@@ -630,6 +651,32 @@ def cmd_interactive(
             state["status_streaming_text"],
         )
 
+    def _run_configurable_extra(
+        mode: str | None, thread_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Invited experts plus, on the session's own thread, the rubric marker."""
+        return merge_configurable_extra(
+            active_teams_configurable_extra(channel_runtime),
+            thread_run_extra(
+                channel_runtime.rubric,
+                runtime_gateways.graph_gateway,
+                thread_id=thread_id or state["thread_id"],
+                current_thread_id=state["thread_id"],
+                mode=mode,
+            ),
+        )
+
+    async def _acknowledge_rubric(agent: Any, thread_id: str | None) -> None:
+        """Drop operations the thread applied; refresh the status-bar badge."""
+        await acknowledge_applied(
+            channel_runtime.rubric,
+            state["rubric_badges"],
+            runtime_gateways.graph_gateway,
+            agent=agent,
+            dirs=state["dirs"],
+            thread_id=thread_id,
+        )
+
     def _set_status_streaming_text(text: str | None) -> None:
         """Update the in-flight assistant overlay used by the status bar."""
         new_text = text or ""
@@ -675,6 +722,7 @@ def cmd_interactive(
         if reset_streaming_text:
             state["status_streaming_text"] = ""
         _rebuild_status_snapshot()
+        await _acknowledge_rubric(agent_loader.agent, state["thread_id"])
 
     def _bottom_toolbar():
         """Render the persistent bottom status bar for prompt_toolkit."""
@@ -688,6 +736,7 @@ def cmd_interactive(
             state["status_snapshot"],
             state["status_started_at"],
             width,
+            rubric_badge=state["rubric_badges"].get(state["thread_id"]),
         )
         if agent_loader.is_pending:
             # Per-server ✓/✗ lines are printed above the prompt by
@@ -714,6 +763,7 @@ def cmd_interactive(
             state["status_snapshot"],
             state["status_started_at"],
             console.size.width,
+            rubric_badge=state["rubric_badges"].get(state["thread_id"]),
         )
 
     async def _handle_stream_status_event(event_type: str, stream_state) -> None:
@@ -1167,9 +1217,7 @@ def cmd_interactive(
                             show_thinking=show_thinking,
                             interactive=True,
                             metadata=meta,
-                            configurable_extra=active_teams_configurable_extra(
-                                channel_runtime
-                            ),
+                            configurable_extra=_run_configurable_extra("thread"),
                             on_thinking=_send_thinking_to_channel,
                             on_todo=_send_todo_to_channel,
                             on_file_write=_send_media_to_channel,
@@ -1202,6 +1250,7 @@ def cmd_interactive(
                             _channel_target,
                             state["thread_id"],
                         )
+                        await _acknowledge_rubric(ready_agent, state["thread_id"])
                     except Exception as e:
                         response = f"Error: {e}"
                         console.print(f"[red]Channel error: {e}[/red]")
@@ -1256,7 +1305,9 @@ def cmd_interactive(
                     show_thinking=show_thinking,
                     interactive=True,
                     metadata=meta,
-                    configurable_extra=active_teams_configurable_extra(channel_runtime),
+                    configurable_extra=_run_configurable_extra(
+                        "followup", target_thread_id or state["thread_id"]
+                    ),
                     on_stream_event=_handle_stream_status_event,
                     status_footer_builder=_stream_status_footer,
                     gateway=runtime_gateways.graph_gateway,
@@ -1278,14 +1329,22 @@ def cmd_interactive(
                 # may have launched a chained task (e.g. analysis finished ->
                 # start writing) that would otherwise sit in state with the idle
                 # reader disarmed until the next local prompt. Best-effort.
+                _notif_target = GraphTarget(
+                    local_graph=ready_agent,
+                    **state["dirs"].metadata(),
+                )
                 await async_notifier.enqueue_completions_from_state(
                     runtime_gateways.graph_gateway,
-                    GraphTarget(
-                        local_graph=ready_agent,
-                        **state["dirs"].metadata(),
-                    ),
+                    _notif_target,
                     _notif_tid,
                 )
+                # A revision started in this turn may have launched a process.
+                await async_notifier.enqueue_bg_process_completions_from_state(
+                    runtime_gateways.graph_gateway,
+                    _notif_target,
+                    _notif_tid,
+                )
+                await _acknowledge_rubric(ready_agent, _notif_tid)
                 await _refresh_status_snapshot(reset_streaming_text=True)
                 console.print()
                 _print_separator()
@@ -1565,7 +1624,11 @@ def cmd_interactive(
                             # callbacks; /model swaps the agent).  /resume
                             # awaits its own refresh inline inside the
                             # async callback.
-                            if agent_swapped or _cmd.name in ("/compact", "/new"):
+                            if agent_swapped or _cmd.name in (
+                                "/compact",
+                                "/new",
+                                "/rubric",
+                            ):
                                 await _refresh_status_snapshot(
                                     reset_streaming_text=True,
                                 )
@@ -1612,10 +1675,15 @@ def cmd_interactive(
                         await _refresh_status_snapshot(
                             message_to_send, reset_streaming_text=True
                         )
+                        # Captured before waiting for the lock: a channel /resume
+                        # that lands meanwhile must not move this turn, nor lend
+                        # it the new thread's checklist operations.
+                        turn_thread_id = state["thread_id"]
+                        turn_extra = _run_configurable_extra("thread", turn_thread_id)
                         try:
                             await _run_serialized_turn(
                                 turn_lock,
-                                lambda _agent=ready_agent, _message=message_to_send, _thread_id=state["thread_id"], _meta=meta: (
+                                lambda _agent=ready_agent, _message=message_to_send, _thread_id=turn_thread_id, _meta=meta, _extra=turn_extra: (
                                     _run_rich_cli_streaming_turn(
                                         ui_backend=state["ui_backend"],
                                         agent=_agent,
@@ -1624,9 +1692,7 @@ def cmd_interactive(
                                         show_thinking=show_thinking,
                                         interactive=True,
                                         metadata=_meta,
-                                        configurable_extra=active_teams_configurable_extra(
-                                            channel_runtime
-                                        ),
+                                        configurable_extra=_extra,
                                         on_stream_event=_handle_stream_status_event,
                                         status_footer_builder=_stream_status_footer,
                                         gateway=runtime_gateways.graph_gateway,
@@ -1648,13 +1714,14 @@ def cmd_interactive(
                             await async_notifier.enqueue_completions_from_state(
                                 runtime_gateways.graph_gateway,
                                 _close_target,
-                                state["thread_id"],
+                                turn_thread_id,
                             )
                             await async_notifier.enqueue_bg_process_completions_from_state(
                                 runtime_gateways.graph_gateway,
                                 _close_target,
-                                state["thread_id"],
+                                turn_thread_id,
                             )
+                            await _acknowledge_rubric(ready_agent, turn_thread_id)
                         await _refresh_status_snapshot(reset_streaming_text=True)
                         console.print()
                         _print_separator()
