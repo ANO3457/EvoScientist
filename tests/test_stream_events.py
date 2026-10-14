@@ -1490,3 +1490,162 @@ class TestSummarizationHelpers:
         events = await collect_events(agent)
         usage_events = [e for e in events if e.get("type") == "usage_stats"]
         assert len(usage_events) == 0
+
+
+class TestRunInputRubric:
+    async def test_text_message_carries_the_rubric_only_when_given(self):
+        from EvoScientist.stream.events import build_agent_stream_input
+
+        without = await build_agent_stream_input("hi")
+        assert without == {"messages": [{"role": "user", "content": "hi"}]}
+        with_rubric = await build_agent_stream_input("hi", rubric="- a")
+        assert with_rubric == {
+            "messages": [{"role": "user", "content": "hi"}],
+            "rubric": "- a",
+        }
+
+    async def test_resume_command_is_passed_through_untouched(self):
+        from EvoScientist.stream.events import build_agent_stream_input
+
+        command = Command(resume={"decisions": []})
+        assert await build_agent_stream_input(command, rubric="- a") is command
+
+
+class TestRubricEvents:
+    async def test_grader_events_become_rubric_ui_events(self):
+        agent = FakeV3Agent(
+            [
+                custom_subagent_event(
+                    {
+                        "type": "rubric_evaluation_start",
+                        "grading_run_id": "g",
+                        "iteration": 0,
+                    }
+                ),
+                custom_subagent_event(
+                    {
+                        "type": "rubric_evaluation_end",
+                        "grading_run_id": "g",
+                        "iteration": 0,
+                        "result": "needs_revision",
+                        "explanation": "one gap",
+                        "criteria": [{"name": "c1", "passed": False, "gap": "missing"}],
+                        "unverified": False,
+                    }
+                ),
+            ]
+        )
+        events = await collect_events(agent)
+        rubric = [e for e in events if e.get("type", "").startswith("rubric_")]
+        assert rubric == [
+            {"type": "rubric_evaluation_start", "iteration": 0},
+            {
+                "type": "rubric_evaluation",
+                "iteration": 0,
+                "result": "needs_revision",
+                "explanation": "one gap",
+                "criteria": [{"name": "c1", "passed": False, "gap": "missing"}],
+                "unverified": False,
+            },
+        ]
+
+    async def test_malformed_grader_payload_degrades_instead_of_raising(self):
+        agent = FakeV3Agent(
+            [
+                custom_subagent_event(
+                    {
+                        "type": "rubric_evaluation_end",
+                        "iteration": "x",
+                        "result": None,
+                        "explanation": 3,
+                        "criteria": "nope",
+                    }
+                )
+            ]
+        )
+        events = await collect_events(agent)
+        rubric = [e for e in events if e.get("type") == "rubric_evaluation"]
+        assert rubric == [
+            {
+                "type": "rubric_evaluation",
+                "iteration": 0,
+                "result": "",
+                "explanation": "",
+                "criteria": [],
+                "unverified": False,
+            }
+        ]
+
+    async def test_done_response_keeps_every_pass_on_its_own_paragraph(self):
+        agent = FakeV3Agent(
+            [
+                message_delta("First draft."),
+                message_finish(),
+                custom_subagent_event(
+                    {
+                        "type": "rubric_evaluation_end",
+                        "iteration": 0,
+                        "result": "needs_revision",
+                        "explanation": "one gap",
+                        "criteria": [],
+                    }
+                ),
+                message_delta("Revised answer."),
+                message_finish(),
+            ]
+        )
+        events = await collect_events(agent)
+        done = [e for e in events if e.get("type") == "done"]
+        assert done[-1]["response"] == "First draft.\n\nRevised answer."
+        assert done[-1]["last_pass_response"] == "Revised answer."
+
+    @staticmethod
+    def _verdict(result: str, iteration: int = 0):
+        return custom_subagent_event(
+            {
+                "type": "rubric_evaluation_end",
+                "iteration": iteration,
+                "result": result,
+                "explanation": "",
+                "criteria": [],
+            }
+        )
+
+    async def _done(self, *events):
+        collected = await collect_events(FakeV3Agent(list(events)))
+        return [e for e in collected if e.get("type") == "done"][-1]
+
+    async def test_an_ungraded_run_has_no_last_pass_field(self):
+        done = await self._done(message_delta("Answer."), message_finish())
+        assert "last_pass_response" not in done
+
+    async def test_a_run_satisfied_at_once_has_the_whole_answer_as_its_last_pass(self):
+        done = await self._done(
+            message_delta("Answer."), message_finish(), self._verdict("satisfied")
+        )
+        assert done["last_pass_response"] == done["response"] == "Answer."
+
+    async def test_the_last_pass_is_the_text_after_the_last_revision_request(self):
+        done = await self._done(
+            message_delta("One."),
+            message_finish(),
+            self._verdict("needs_revision"),
+            message_delta("Two."),
+            message_finish(),
+            self._verdict("needs_revision", 1),
+            message_delta("Three."),
+            message_finish(),
+            self._verdict("max_iterations_reached", 2),
+        )
+        assert done["response"] == "One.\n\nTwo.\n\nThree."
+        assert done["last_pass_response"] == "Three."
+
+    async def test_a_revision_pass_without_text_has_an_empty_last_pass(self):
+        done = await self._done(
+            message_delta("Draft."),
+            message_finish(),
+            self._verdict("needs_revision"),
+            self._verdict("satisfied", 1),
+        )
+        assert done["response"].startswith("Draft.")
+        assert done["last_pass_response"] == ""
