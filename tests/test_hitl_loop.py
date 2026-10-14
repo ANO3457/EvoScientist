@@ -30,14 +30,8 @@ from EvoScientist.middleware import events as mw_events
 from EvoScientist.stream import display as display_mod
 from tests.fakes import FakeCheckpointAgent, FakeGraphGateway
 from tests.fakes import StubChannel as _StubChannel
-
-
-def _interrupt_event(n: int) -> dict:
-    return {
-        "type": "interrupt",
-        "interrupt_id": f"i{n}",
-        "action_requests": [{"name": "execute", "args": {"command": f"echo step-{n}"}}],
-    }
+from tests.fakes import attended_config as _attended_config
+from tests.fakes import interrupt_event as _interrupt_event
 
 
 class TestRichCliHitlRoundBudget:
@@ -138,7 +132,9 @@ class TestRichCliHitlRoundBudget:
                 }
             ],
         )
-        agent = FakeCheckpointAgent(values={"messages": [dangling]})
+        # A main-agent approval parks before any tool of the batch runs.
+        parked_at = "HumanInTheLoopMiddleware.after_model"
+        agent = FakeCheckpointAgent(values={"messages": [dangling]}, next=(parked_at,))
         gateway = FakeGraphGateway(stream=_fake_stream, checkpoint=agent)
         state = display_mod.StreamState()
 
@@ -166,10 +162,10 @@ class TestRichCliHitlRoundBudget:
         assert "i51" not in resumes[-1].message.resume
         assert [as_node for _values, as_node in agent.updates] == [
             "__end__",
-            "tools",
+            parked_at,
             "__end__",
         ]
-        tool_update = next(update for update in agent.updates if update[1] == "tools")
+        tool_update = next(update for update in agent.updates if update[1] == parked_at)
         content = tool_update[0]["messages"][0].content
         assert HITL_ROUND_LIMIT_REJECT_MESSAGE in content
         assert "Do not retry this tool call" in content
@@ -329,7 +325,7 @@ class TestRichCliHitlRoundBudget:
         gateway = FakeGraphGateway(stream=_fake_stream, checkpoint=agent)
         monkeypatch.setattr(display_mod.console, "print", lambda *_a, **_k: None)
 
-        with caplog.at_level(logging.WARNING, logger="EvoScientist.stream.display"):
+        with caplog.at_level(logging.WARNING, logger="EvoScientist"):
             result = display_mod._run_streaming(
                 agent=agent,
                 message="hello",
@@ -343,9 +339,13 @@ class TestRichCliHitlRoundBudget:
 
         assert result == "partial"
         assert len(gateway.requests) == 1
-        assert any(
-            "Failed to close parked HITL" in r.getMessage() for r in caplog.records
-        )
+        failures = [
+            r
+            for r in caplog.records
+            if "Could not close the parked checkpoint" in r.getMessage()
+        ]
+        assert len(failures) == 1
+        assert failures[0].exc_info is None
 
     def test_channel_session_grant_resumes_past_50_rounds(self, monkeypatch):
         from langgraph.types import Command  # type: ignore[import-untyped]
@@ -456,15 +456,6 @@ def _interrupts_then_done(interrupts: int):
         yield {"type": "done", "content": "finished"}
 
     return _fake_stream
-
-
-def _attended_config(monkeypatch):
-    monkeypatch.setattr(
-        "EvoScientist.EvoScientist._ensure_config",
-        lambda: SimpleNamespace(
-            auto_approve=False, dangerous_mode=False, shell_allow_list=""
-        ),
-    )
 
 
 class TestRichCliSessionGrantReachesTheGraph:
@@ -1557,16 +1548,20 @@ class TestConsumerHitlRoundBudget:
         await bus.publish_inbound(
             BusInbound(channel="stub", sender_id="u1", chat_id="c1", content="go")
         )
-        with caplog.at_level(logging.WARNING, logger="EvoScientist.channels.consumer"):
+        with caplog.at_level(logging.WARNING, logger="EvoScientist"):
             task = asyncio.create_task(consumer.run())
             first = await asyncio.wait_for(bus.consume_outbound(), timeout=10.0)
             second = await asyncio.wait_for(bus.consume_outbound(), timeout=10.0)
 
         assert first.content == "partial answer"
         assert second.content == "Approval round limit reached; stopping this turn."
-        assert any(
-            "Failed to close parked HITL" in r.getMessage() for r in caplog.records
-        )
+        failures = [
+            r
+            for r in caplog.records
+            if "Could not close the parked checkpoint" in r.getMessage()
+        ]
+        assert len(failures) == 1
+        assert failures[0].exc_info is None
 
         await consumer.stop()
         await task
@@ -1720,7 +1715,8 @@ def test_abandoned_tool_messages_closes_invalid_tool_calls():
                 ],
             ),
             ToolMessage(content="done", name="execute", tool_call_id="ok-1"),
-        ]
+        ],
+        reason="round_limit",
     )
     assert [message.tool_call_id for message in patch] == ["bad-1"]
     assert HITL_ROUND_LIMIT_REJECT_MESSAGE in patch[0].content
@@ -1822,7 +1818,9 @@ async def test_close_parked_checkpoint_keeps_finished_sibling_results():
     )
 
     gateway = FakeGraphGateway(checkpoint=agent)
-    await close_parked_checkpoint(gateway, GraphTarget(), "t-sibling")
+    await close_parked_checkpoint(
+        gateway, GraphTarget(), "t-sibling", reason="round_limit"
+    )
 
     assert [as_node for _values, as_node in agent.updates] == [
         "__end__",
@@ -1854,7 +1852,9 @@ async def test_close_parked_checkpoint_trailing_end_even_without_dangling_calls(
 
     agent = FakeCheckpointAgent()
     gateway = FakeGraphGateway(checkpoint=agent)
-    await close_parked_checkpoint(gateway, GraphTarget(), "t-empty")
+    await close_parked_checkpoint(
+        gateway, GraphTarget(), "t-empty", reason="round_limit"
+    )
     assert [as_node for _values, as_node in agent.updates] == ["__end__", "__end__"]
     assert all(values is None for values, _node in agent.updates)
     verify = await agent.aget_state({})
@@ -1872,6 +1872,7 @@ async def test_close_parked_checkpoint_raises_when_verify_still_stuck():
             FakeGraphGateway(checkpoint=_StickyCheckpointAgent()),
             GraphTarget(),
             "t-sticky",
+            reason="round_limit",
         )
 
 
@@ -1887,7 +1888,7 @@ async def test_close_parked_checkpoint_ignores_local_graph():
     )
     gateway = FakeGraphGateway(checkpoint=agent)
     await close_parked_checkpoint(
-        gateway, GraphTarget(local_graph=sentinel), "t-gateway"
+        gateway, GraphTarget(local_graph=sentinel), "t-gateway", reason="round_limit"
     )
     assert [as_node for _values, as_node in agent.updates] == ["__end__", "__end__"]
     assert sentinel.aget_state.await_count == 0
@@ -1904,6 +1905,9 @@ async def test_close_parked_checkpoint_via_local_gateway():
 
     agent = FakeCheckpointAgent()
     await close_parked_checkpoint(
-        LocalGraphGateway(), GraphTarget(local_graph=agent), "t-local"
+        LocalGraphGateway(),
+        GraphTarget(local_graph=agent),
+        "t-local",
+        reason="round_limit",
     )
     assert [as_node for _values, as_node in agent.updates] == ["__end__", "__end__"]
