@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from EvoScientist import paths
 from EvoScientist.config import (
     EvoScientistConfig,
     GatewaySurface,
@@ -54,7 +55,7 @@ def _restore_dangerous_env():
 def temp_config_dir(tmp_path, monkeypatch):
     """Use a temporary directory for config during tests."""
     config_dir = tmp_path / "evoscientist"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(paths, "CONFIG_DIR", config_dir)
     # Also clear any API keys from environment
     for key in [
         "ANTHROPIC_API_KEY",
@@ -360,17 +361,12 @@ class TestEvoScientistConfig:
 
 
 class TestConfigPaths:
-    def test_get_config_dir_with_xdg(self, monkeypatch, tmp_path):
-        """Test config dir uses XDG_CONFIG_HOME when set."""
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-        config_dir = get_config_dir()
-        assert config_dir == tmp_path / "evoscientist"
-
-    def test_get_config_dir_default(self, monkeypatch):
-        """Test config dir defaults to ~/.config/evoscientist."""
-        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-        config_dir = get_config_dir()
-        assert config_dir == Path.home() / ".config" / "evoscientist"
+    def test_get_config_dir_ignores_a_later_xdg_change(self, monkeypatch, tmp_path):
+        """Read once at startup: a workspace ``.env`` loaded later, which can
+        set ``XDG_CONFIG_HOME``, does not move the config folder mid-run."""
+        before = get_config_dir()
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "elsewhere"))
+        assert get_config_dir() == before
 
     def test_get_config_path(self, temp_config_dir):
         """Test config file path."""
@@ -845,6 +841,12 @@ class TestPriorityChain:
             == 300
         )
 
+    def test_backend_allowed_origins_yaml_list_normalized_to_csv(self):
+        config = EvoScientistConfig(
+            backend_allowed_origins=["https://a.example", "https://b.example"]
+        )
+        assert config.backend_allowed_origins == "https://a.example,https://b.example"
+
     def test_shell_allow_list_yaml_list_normalized_to_csv(self):
         """A YAML list spelling survives ``__post_init__`` as a list; normalize
         to CSV so the policy resolver's ``.split`` never raises AttributeError."""
@@ -1234,7 +1236,6 @@ class TestDotenvIsolation:
         then poisons ``os.environ.get(key, default)`` lookups for every
         test that runs afterwards in the same process.
         """
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         repro_dir = tmp_path / "repro"
         repro_dir.mkdir()
         (repro_dir / ".env").write_text("MINIMAX_BASE_URL=\n")
@@ -1448,3 +1449,10 @@ class TestDotenvIsolation:
 
         assert config.langgraph_dev_port == 6606
         assert os.environ["EVOSCIENTIST_LANGGRAPH_DEV_PORT"] == "6606"
+
+
+def test_backend_allowed_origins_ignores_the_environment(temp_config_dir, monkeypatch):
+    """A workspace ``.env`` must not widen the backend's browser boundary."""
+    monkeypatch.setenv("EVOSCIENTIST_BACKEND_ALLOWED_ORIGINS", "https://evil.example")
+    monkeypatch.setenv("BACKEND_ALLOWED_ORIGINS", "https://evil.example")
+    assert get_effective_config().backend_allowed_origins == ""

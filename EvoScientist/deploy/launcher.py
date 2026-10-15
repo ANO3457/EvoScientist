@@ -563,6 +563,7 @@ class WebUILauncher:
                 file_persistence=file_persistence,
                 jobs_per_worker=jobs_per_worker,
                 config_fingerprint=_server_config_fingerprint(self._config),
+                allowed_origins=getattr(self._config, "backend_allowed_origins", ""),
             )
         except Exception as exc:
             self._raise_if_stopped()
@@ -577,12 +578,17 @@ class WebUILauncher:
         # The UI reaches the backend from the BROWSER; give it the backend port
         # for config prefill. Secrets are scrubbed — the browser UI never needs
         # LLM provider API keys. HOSTNAME is the front-end's only bind knob.
-        return _scrubbed_env(
-            {
-                "EVOSCIENTIST_LANGGRAPH_DEV_PORT": str(self._cfg.backend_port),
-                "PORT": str(self._cfg.webui_port),
-                "HOSTNAME": self._cfg.webui_host,
-            }
+        # The data and config folders are this process's, as absolute paths.
+        from ..paths import dir_env
+
+        return dir_env(
+            _scrubbed_env(
+                {
+                    "EVOSCIENTIST_LANGGRAPH_DEV_PORT": str(self._cfg.backend_port),
+                    "PORT": str(self._cfg.webui_port),
+                    "HOSTNAME": self._cfg.webui_host,
+                }
+            )
         )
 
     def _result(self) -> LaunchResult:

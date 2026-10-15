@@ -19,6 +19,8 @@ from typing import Any, Literal, get_args, get_origin, get_type_hints
 import yaml
 from dotenv import dotenv_values, find_dotenv
 
+from .. import paths
+
 # Tools that run shell commands and need manual HITL approval (subject to
 # shell_allow_list). Single source of truth for every interrupt consumer
 # (stream/display.py, channels/interaction.py) — keep aligned with the agent's
@@ -111,12 +113,10 @@ def _normalize_hhmm(value: Any) -> str | None:
 def get_config_dir() -> Path:
     """Get the configuration directory path.
 
-    Uses XDG_CONFIG_HOME if set, otherwise ~/.config/evoscientist/
+    ``$XDG_CONFIG_HOME/evoscientist`` when that is set, otherwise
+    ``~/.config/evoscientist``, read once at startup (``paths.CONFIG_DIR``).
     """
-    xdg_config = os.environ.get("XDG_CONFIG_HOME")
-    if xdg_config:
-        return Path(xdg_config) / "evoscientist"
-    return Path.home() / ".config" / "evoscientist"
+    return paths.CONFIG_DIR
 
 
 def get_config_path() -> Path:
@@ -511,6 +511,10 @@ class EvoScientistConfig:
     auto_approve: bool = False  # Auto-approve all tool executions without prompting
     auto_mode: bool = False  # Run unattended: imply auto_approve and disable ask_user
     shell_allow_list: str = ""  # Comma-separated shell command prefixes to auto-approve
+    # Comma-separated origins (``https://host[:port]``) whose pages may use the
+    # backend besides this machine's own. Read from config.yaml only: no
+    # environment variable sets it, so a workspace ``.env`` cannot widen it.
+    backend_allowed_origins: str = ""
 
     # Dangerous mode: real-filesystem access (no workspace confinement). The agent
     # operates on real absolute paths anywhere on disk; the privileged-command
@@ -598,6 +602,10 @@ class EvoScientistConfig:
         # the source rather than guarding every consumer.
         if isinstance(self.shell_allow_list, list | tuple):
             self.shell_allow_list = ",".join(str(s) for s in self.shell_allow_list)
+        if isinstance(self.backend_allowed_origins, list | tuple):
+            self.backend_allowed_origins = ",".join(
+                str(s) for s in self.backend_allowed_origins
+            )
 
         # auto_mode and dangerous_mode both imply auto_approve regardless of
         # source (CLI, env, config file, direct construction) — done here so the
