@@ -227,10 +227,11 @@ uv tool install EvoScientist
 ```
 
 > [!NOTE]
-> To update an existing installation to the latest version, use `uv tool upgrade`:
+> To update an existing installation to the latest version, with the dependency versions that release was tested with, use `EvoSci update`:
 > ```bash
-> uv tool upgrade EvoScientist
+> EvoSci update
 > ```
+> On 0.3.6 or older, which have no `EvoSci update`, run `uv tool upgrade EvoScientist` once, with EvoScientist closed.
 
 Or install into the current environment instead:
 

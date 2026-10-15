@@ -9,11 +9,12 @@
 #   block     adds outbound firewall rules for the installed Python and Node
 #             executables, then checks that they cannot reach https://pypi.org
 #   offline   EvoSci setup and the WebUI launch; run after block
+#   update    EvoSci update to a release (install_smoke_update.py)
 #
 # EXPECTED_VERSION (else the newest release on INDEX_URL) and
 # EVOSCI_INSTALL_CONSTRAINTS (else constraints.txt at the release tag) are
 # optional.
-param([Parameter(Mandatory = $true)][ValidateSet('online', 'block', 'offline')][string]$Mode)
+param([Parameter(Mandatory = $true)][ValidateSet('online', 'block', 'offline', 'update')][string]$Mode)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -60,7 +61,8 @@ $ToolDir = (Invoke-Native $Uv @('tool', 'dir')).Trim()
 $EvoSci = Join-Path $BinDir 'EvoSci.exe'
 $Python = Join-Path $ToolDir 'evoscientist\Scripts\python.exe'
 
-function Test-Answers([string]$Url) {
+# Any answer below *Below*; the backend's /ok must be a success (300).
+function Test-Answers([string]$Url, [int]$Below = 500) {
     try {
         $request = [Net.WebRequest]::Create($Url)
         $request.Proxy = $null
@@ -72,7 +74,7 @@ function Test-Answers([string]$Url) {
         if (-not $_.Exception.Response) { return $false }
         $code = [int]$_.Exception.Response.StatusCode
     }
-    return ($code -ge 200 -and $code -lt 500)
+    return ($code -ge 200 -and $code -lt $Below)
 }
 
 function Show-Logs([string]$Log) {
@@ -94,7 +96,7 @@ function Test-Launch {
         -RedirectStandardOutput $log -RedirectStandardError "$log.err" -WindowStyle Hidden
     $up = $false
     for ($i = 0; $i -lt 240; $i++) {
-        if ((Test-Answers $BackendUrl) -and (Test-Answers $WebuiUrl)) { $up = $true; break }
+        if ((Test-Answers $BackendUrl 300) -and (Test-Answers $WebuiUrl)) { $up = $true; break }
         if ($proc.HasExited) { break }
         Start-Sleep -Seconds 1
     }
@@ -230,10 +232,43 @@ function Test-Offline {
     Test-Launch
 }
 
+# EvoSci update to a release through this code's updater and its helper; see
+# update() in install_smoke_check.sh. The block step's firewall rules go
+# first: the update needs the network.
+function Test-Update {
+    Get-NetFirewallRule -DisplayName 'evosci-smoke-block-*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    $key = 'version'
+    if ($env:EVOSCI_INSTALL_SOURCE) {
+        $constraints = $env:EVOSCI_INSTALL_CONSTRAINTS
+        # uv splits a -c path at spaces (astral-sh/uv#12639): by name, from its folder.
+        Push-Location -LiteralPath (Split-Path -Parent $constraints)
+        try {
+            Invoke-Native $Uv @('pip', 'install', '-q', '--python', $Python, '--reinstall-package', 'evoscientist', '-c', (Split-Path -Leaf $constraints), $env:EVOSCI_INSTALL_SOURCE) -WithStderr | Write-Host
+        } finally {
+            Pop-Location
+        }
+        if ($NativeExitCode -ne 0) { Fail "uv pip install of $env:EVOSCI_INSTALL_SOURCE failed" }
+        $key = 'latest'
+    } else {
+        Invoke-Native $EvoSci @('update', '--help') | Out-Null
+        if ($NativeExitCode -ne 0) {
+            Write-Host 'This release has no EvoSci update yet; nothing to check.'
+            return
+        }
+    }
+    $check = (Invoke-Native $EvoSci @('update', '--check', '--json')) -split "`n" | Select-Object -Last 1 | ConvertFrom-Json
+    $target = $check.detail.$key
+    # Not the environment's Python: it would block the update it waits for.
+    $base = (Invoke-Native $Python @('-c', 'import sys; print(sys._base_executable)')).Trim()
+    Invoke-Native $base @((Join-Path $PSScriptRoot 'install_smoke_update.py'), $EvoSci, $target) -WithStderr | Write-Host
+    if ($NativeExitCode -ne 0) { Fail "EvoSci update to $target failed (see above)" }
+}
+
 switch ($Mode) {
     'online' { Test-Online }
     'block' { Block-Network }
     'offline' { Test-Offline }
+    'update' { Test-Update }
 }
 # The last native command's exit code must not become the script's.
 exit 0

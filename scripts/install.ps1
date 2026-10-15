@@ -115,17 +115,20 @@ except Exception as exc:
     sys.exit(0)
 python = tool.get("python")
 print("python\t" + (python if isinstance(python, str) else "%d.%d" % sys.version_info[:2]))
+own_extras = []
 for entry in entries:
     try:
         if norm(entry["name"]) == "evoscientist":
-            if entry.get("extras"):
-                print("extras\t" + ",".join(entry["extras"]))
+            # Several entries when an extra was added with --with: all extras.
+            own_extras += [x for x in entry.get("extras") or [] if x not in own_extras]
             continue
         kind, value = requirement(entry)
     except Exception as exc:
         print("warn\tcannot keep " + repr(entry.get("name", entry)) + " (" + str(exc) + ")")
         continue
     print(kind + "\t" + value)
+if own_extras:
+    print("extras\t" + ",".join(own_extras))
 '@
 
     function Write-Info([string]$Text) { Write-Host $Text }
@@ -146,6 +149,8 @@ for entry in entries:
     # its compiler fails when %TEMP% has a character outside the ANSI code page.
     function Get-LongPath([string]$Path) {
         try { $full = [IO.Path]::GetFullPath($Path) } catch { return $Path.TrimEnd('\') }
+        # Only an 8.3 name has a ~.
+        if ($full.IndexOf('~') -lt 0) { return $full.TrimEnd('\') }
         $long = [IO.Path]::GetPathRoot($full)
         foreach ($part in $full.Substring($long.Length).Split([char[]]'\', [StringSplitOptions]::RemoveEmptyEntries)) {
             $found = @()
