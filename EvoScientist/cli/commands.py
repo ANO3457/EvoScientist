@@ -1490,6 +1490,20 @@ async def _apply_serve_resume_state(
 
     new_dirs = dirs if dirs is not None and dirs != runtime_state.dirs else None
     workspace_update: tuple[SessionDirs, CompiledStateGraph] | None = None
+    old_thread_id = runtime_state.thread_id
+    thread_changed = thread_id != old_thread_id
+    # Serve pauses the thread it leaves and ends the wait on a thread restored
+    # after a restart, in the store of the workspace it leaves them in.
+    left_thread = False
+
+    async def leave_thread(proactive: Any) -> None:
+        nonlocal left_thread
+        left_thread = True
+        for call in (
+            lambda: proactive.leave(old_thread_id),
+            lambda: proactive.on_turn(thread_id),
+        ):
+            await asyncio.to_thread(_serve_proactive_call, call)
 
     if new_dirs is not None:
         effective_config = _serve_resume_config(runtime_state, config)
@@ -1505,6 +1519,15 @@ async def _apply_serve_resume_state(
             config=effective_config,
             runtime=runtime_state.async_runtime,
         )
+        proactive = getattr(channel_runtime, "proactive", None)
+        moves_workspace = new_dirs.workspace != runtime_state.dirs.workspace
+        if proactive is not None and moves_workspace:
+            # Until C17 each workspace has its own cron store: pause the thread
+            # serve leaves and delete this workspace's proactive cron while its
+            # store is still the served one.
+            if thread_changed:
+                await leave_thread(proactive)
+            await asyncio.to_thread(_serve_proactive_call, proactive.stop)
         if not await _move_server_or_keep_session(
             effective_config,
             target=new_dirs,
@@ -1515,18 +1538,185 @@ async def _apply_serve_resume_state(
                 "[yellow]Background agent server sync failed; async "
                 "subagents and EvoMemory workers may be unavailable.[/yellow]"
             )
+            if proactive is not None and moves_workspace:
+                from ..proactive.serve import MOVE_FAILED_REASON
+
+                proactive.unavailable_reason = MOVE_FAILED_REASON
+        elif proactive is not None and moves_workspace:
+            proactive.move_to(new_dirs.workspace)
+            # Clears a proactive cron an earlier serve left in that workspace.
+            await asyncio.to_thread(_serve_proactive_call, proactive.reconcile)
         workspace_update = (new_dirs, new_agent)
 
-    old_thread_id = runtime_state.thread_id
-    thread_changed = thread_id != old_thread_id
     if thread_changed:
         runtime_state.set_thread_id(thread_id, channel_runtime)
+        proactive = getattr(channel_runtime, "proactive", None)
+        if proactive is not None:
+            if not left_thread:
+                await leave_thread(proactive)
+            # A thread armed or paused earlier is armed again here.
+            await asyncio.to_thread(
+                _serve_proactive_call, lambda: proactive.adopt(thread_id)
+            )
 
     if workspace_update is not None:
         updated_dirs, updated_agent = workspace_update
         runtime_state.dirs = updated_dirs
         _set_channels_media_dir(updated_dirs.workspace.media_dir)
         runtime_state.set_agent(updated_agent, channel_runtime)
+
+    # Tell the proactive cron which threads serve can now deliver to. Last, so
+    # the thread, folders and agent are already the new ones. Idempotent:
+    # ``/resume`` reaches this function twice.
+    proactive = getattr(channel_runtime, "proactive", None)
+    if proactive is not None:
+        await asyncio.to_thread(_serve_proactive_call, proactive.mirror)
+
+
+def _serve_turn_metadata(
+    dirs: SessionDirs,
+    model: str | None,
+    thread_id: str,
+    channel_runtime: ChannelRuntime | None,
+) -> dict[str, str]:
+    """Run metadata of a serve turn: ``build_metadata`` plus, for a thread armed
+    for proactive pushes, its channel origin.
+
+    The runtime copies run metadata into the run's checkpoints, which is how
+    the origin survives a restart. ``build_metadata`` itself stays as it is:
+    the TUI, the CLI and single-shot runs share it.
+    """
+    from ..proactive.serve import origin_run_metadata
+
+    meta = build_metadata(dirs, model)
+    proactive = getattr(channel_runtime, "proactive", None)
+    if proactive is not None and proactive.is_armed(thread_id):
+        origin = get_channel_origin(thread_id)
+        if origin is not None:
+            meta.update(origin_run_metadata(origin))
+    return meta
+
+
+def _serve_proactive_call(call: Callable[[], None]) -> None:
+    """Run a proactive-controller call; a failure is logged, never raised.
+
+    Proactive pushes are best effort: a dev-server error must not break the
+    channel turn or the ``/new`` / ``/resume`` that triggered the call.
+    """
+    try:
+        call()
+    except Exception:
+        _serve_logger.warning("Proactive push bookkeeping failed", exc_info=True)
+
+
+def _serve_proactive_controller(
+    config: "EvoScientistConfig",
+    runtime_gateways: "RuntimeGateways",
+    *,
+    gateway_backend: str | None,
+    workspace: Workspace,
+) -> Any:
+    """Build serve's proactive controller, marked unavailable with the reason.
+
+    The cron runs on the dev server, so the feature needs serve's gateway to
+    be the server one: not the ``local`` backend, and not #470's fallback to
+    the in-process gateway when the dev server was unavailable at startup.
+    """
+    from ..gateway.composite import CompositeGraphGateway
+    from ..langgraph_dev.sdk import (
+        configured_langgraph_dev_url,
+        default_scheduler_timezone,
+        get_langgraph_sync_client,
+    )
+    from ..proactive.serve import ProactiveServe
+
+    reason = None
+    client = None
+    if gateway_backend != "langgraph_server":
+        reason = "proactive follow-ups need `gateway_backend_serve: langgraph_server`"
+    elif not isinstance(runtime_gateways.graph_gateway, CompositeGraphGateway):
+        reason = (
+            "the dev server was unavailable when serve started, so serve runs "
+            "in-process; restart serve to use proactive follow-ups"
+        )
+    else:
+        # Serve's message loop makes these calls: a dev server that accepts
+        # connections but stalls must not hold channel messages for minutes.
+        client = get_langgraph_sync_client(
+            url=configured_langgraph_dev_url(), timeout=10.0
+        )
+    return ProactiveServe(
+        workspace=workspace,
+        client=client,
+        timezone=default_scheduler_timezone(config),
+        unavailable_reason=reason,
+        publish=publish_to_channel_origin,
+        can_deliver=lambda thread_id: get_channel_origin(thread_id) is not None,
+        forget_origin=forget_channel_origin,
+        origin_of=get_channel_origin,
+    )
+
+
+def _serve_restore_proactive(proactive: Any, async_runtime: AsyncRuntime) -> None:
+    """Re-arm the conversation that was armed before serve restarted.
+
+    Its channel origin comes back from checkpoint metadata, so a push can
+    reach the chat even though serve starts on a fresh thread.
+    """
+    from ..sessions import latest_origin_checkpoints
+    from .channel import restore_channel_origin
+
+    if not proactive.available:
+        return
+    rows = async_runtime.run_sync(latest_origin_checkpoints)
+    restored = proactive.restore(
+        rows,
+        restore_origin=lambda thread_id, origin: restore_channel_origin(
+            thread_id, **origin
+        ),
+    )
+    if restored is not None:
+        console.print(
+            f"[dim]Proactive follow-ups: waiting on thread {restored[:8]} "
+            "from before the restart.[/dim]"
+        )
+
+
+def _make_serve_proactive_switch(
+    runtime_state: ServeRuntimeState,
+    channel_runtime: ChannelRuntime | None,
+) -> Callable[[str], None]:
+    """Make a thread serve's current one after a push was applied to it.
+
+    Used for the thread restored after a restart: the user's reply to the
+    push then continues that conversation, as after ``/resume``.
+    """
+
+    def _switch(thread_id: str) -> None:
+        import asyncio
+
+        from ..sessions import get_thread_metadata
+
+        async def _go() -> None:
+            stored = await get_thread_metadata(thread_id) or {}
+            dirs = await asyncio.to_thread(
+                SessionDirs.from_stored,
+                stored.get("workspace_dir"),
+                stored.get("run_dir"),
+            )
+            await _apply_serve_resume_state(
+                runtime_state,
+                channel_runtime,
+                thread_id=thread_id,
+                dirs=dirs or runtime_state.dirs,
+            )
+
+        runtime_state.async_runtime.run_sync(_go)
+        console.print(
+            f"[dim][serve] Continuing thread {thread_id} (proactive push)[/dim]"
+        )
+
+    return _switch
 
 
 def _make_serve_handle_session_resume_cb(
@@ -1780,7 +1970,13 @@ def _serve_process_message(
             console.print(f"[dim][{msg.channel_type}] Replied to {msg.sender}[/dim]")
             return
 
-        meta = build_metadata(dirs, model)
+        meta = _serve_turn_metadata(
+            dirs, model, runtime_state.thread_id, channel_runtime
+        )
+        proactive = getattr(channel_runtime, "proactive", None)
+        if proactive is not None:
+            # A turn in serve's fresh thread ends a restored thread's candidacy.
+            _serve_proactive_call(lambda: proactive.on_turn(runtime_state.thread_id))
         try:
             response = run_streaming(
                 ui_backend="cli",
@@ -1843,8 +2039,8 @@ def _serve_drain_notifications(
             console.print(line_text, style=line_style, markup=False)
         # Use the current folders from runtime_state (updated by /resume's
         # session-rebind callback).
-        meta = build_metadata(runtime_state.dirs, model)
         tid = runtime_state.thread_id
+        meta = _serve_turn_metadata(runtime_state.dirs, model, tid, channel_runtime)
         try:
             response = run_streaming(
                 ui_backend="cli",
@@ -2049,6 +2245,23 @@ def serve(
 
     channel_runtime = ChannelRuntime(agent=agent, thread_id=tid)
 
+    # Proactive pushes (#263): serve owns the workspace's proactive cron.
+    # Re-arm the conversation armed before a restart, then recreate the cron,
+    # or delete it when nothing is armed: a cron kept from an earlier run
+    # fails every tick after a dev-server restart.
+    proactive = _serve_proactive_controller(
+        config,
+        runtime_gateways,
+        gateway_backend=gateway_backend,
+        workspace=dirs.workspace,
+    )
+    channel_runtime.proactive = proactive
+    _serve_proactive_call(lambda: _serve_restore_proactive(proactive, async_runtime))
+    _serve_proactive_call(proactive.reconcile)
+    _serve_proactive_switch = _make_serve_proactive_switch(
+        runtime_state, channel_runtime
+    )
+
     # Build the slash-dispatch callbacks once; the poll loop reuses
     # them for every inbound message.  Without this hoist each message
     # would allocate a fresh closure pair.
@@ -2199,12 +2412,23 @@ def serve(
                 # finished -> start writing) that would otherwise sit in state
                 # with the reader disarmed until an inbound channel message.
                 runtime_state.async_runtime.run_sync(_serve_enqueue_completions)
+
+            # Apply proactive pushes the cron decided (throttled inside).
+            _serve_proactive_call(
+                lambda: proactive.poll(
+                    current_thread_id=runtime_state.thread_id,
+                    switch_to=_serve_proactive_switch,
+                )
+            )
     except KeyboardInterrupt:
         shutdown_event.set()
     finally:
         signal.signal(signal.SIGINT, _orig_sigint)
         signal.signal(signal.SIGTERM, _orig_sigterm)
         console.print("\n[dim]Shutting down...[/dim]")
+        # Before the atexit hook stops the dev server serve started: without
+        # serve nothing can be delivered, so the cron would only cost calls.
+        _serve_proactive_call(proactive.stop)
         _channels_stop(runtime=channel_runtime)
         console.print("[dim]Stopped.[/dim]")
 
