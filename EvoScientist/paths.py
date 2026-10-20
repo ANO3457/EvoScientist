@@ -53,6 +53,11 @@ def host_file_tool_path(path: str) -> str:
     return path
 
 
+# What reading a stored or forwarded folder value can raise: a wrong type,
+# a NUL byte, an unresolvable path or a symlink loop.
+PATH_ERRORS = (TypeError, ValueError, OSError, RuntimeError)
+
+
 @dataclass(frozen=True)
 class Workspace:
     """A project folder: the unit that owns skills, runs, media and memory.
@@ -77,6 +82,16 @@ class Workspace:
     def runs_dir(self) -> Path:
         """Parent folder of ``--mode=run`` session folders (``<root>/runs``)."""
         return self.root / "runs"
+
+    def is_run_folder(self, path: str | Path) -> bool:
+        """True if *path* is one of this workspace's ``--mode=run`` session
+        folders: it resolves to ``<root>/runs/<name>``. A ``runs`` folder or a
+        run folder that links outside ``<root>/runs`` is not supported; a run
+        folder linking to another run folder reads as that one.
+
+        Resolves *path*, so call it off the event loop on the server.
+        """
+        return normalize_path(path).parent == self.runs_dir
 
     @property
     def media_dir(self) -> Path:
@@ -148,21 +163,19 @@ class SessionDirs:
         """Read the folders a thread was stored with, normalised.
 
         Returns ``None`` when nothing was stored or the value cannot be
-        resolved. A ``run_dir`` outside the workspace is dropped: run folders
-        live under ``<root>/runs``. Resolves paths, so call it off the event
-        loop on the server.
+        resolved. A ``run_dir`` that is not one of the workspace's run folders
+        (``<root>/runs/<name>``) is dropped. Resolves paths, so call it off
+        the event loop on the server.
         """
         if not workspace_dir:
             return None
         try:
             dirs = cls(Workspace(workspace_dir), Path(run_dir) if run_dir else None)
-        except (TypeError, ValueError, OSError, RuntimeError):
+            if dirs.run_dir is None or dirs.workspace.is_run_folder(dirs.run_dir):
+                return dirs
+        except PATH_ERRORS:
             return None
-        if dirs.run_dir is not None and not dirs.run_dir.is_relative_to(
-            dirs.workspace.root
-        ):
-            return cls(dirs.workspace)
-        return dirs
+        return cls(dirs.workspace)
 
     @classmethod
     def from_legacy(cls, workspace_dir: str | Path) -> SessionDirs:

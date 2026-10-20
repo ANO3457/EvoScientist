@@ -3,25 +3,32 @@
 langgraph-api calls a registered factory on every access to a graph: runs,
 state and history reads, state updates and schema reads. The factory picks
 the folders the access is for and returns the graph built for them from a
-cache; a graph is built once per (graph, project, run folder) and kept.
+cache, built once per (graph, project, run folder).
 
-Graphs in ``FOLDER_GRAPH_IDS`` work in the session's folder, so their key
-includes the run folder of a ``--mode=run`` session; every other graph works
-in the project root and is built once per project.
+Graphs in ``FOLDER_GRAPH_IDS`` work in a thread's run folder, so their key
+includes it; every other graph works in the project root and is built once
+per project.
 """
 
 from __future__ import annotations
 
 import asyncio
 import threading
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langgraph_sdk.runtime import ServerRuntime
+from starlette.exceptions import HTTPException
 
 from ..paths import SessionDirs, process_session_dirs
-from ..sessions import FOLDER_GRAPH_IDS
-from .folder_check import check_run_folders
+from ..sessions import (
+    FOLDER_GRAPH_IDS,
+    RESOLVED_FOLDERS,
+    ThreadBindingError,
+    thread_binding,
+)
+from .folder_check import RunFolderMismatchError, resolve_folders
 
 
 def _main(dirs: SessionDirs) -> Any:
@@ -126,12 +133,24 @@ class GraphCache:
 
     Builds share process-wide state (the active config, chat model and MCP
     caches, ``os.environ``), so they run one at a time; a graph already built
-    is returned without waiting for another's build.
+    is returned without waiting for another's build. A project's graphs stay
+    built; graphs built for a run folder are dropped, least recently used
+    first, past ``RUN_FOLDER_GRAPHS``.
     """
+
+    RUN_FOLDER_GRAPHS = 32
 
     def __init__(self) -> None:
         self._build_lock = threading.Lock()
-        self._graphs: dict[tuple[str, str, str | None], Any] = {}
+        self._lock = threading.Lock()
+        self._graphs: OrderedDict[tuple[str, str, str | None], Any] = OrderedDict()
+
+    def _cached(self, key: tuple[str, str, str | None]) -> Any:
+        with self._lock:
+            graph = self._graphs.get(key)
+            if graph is not None and key[2] is not None:
+                self._graphs.move_to_end(key)
+            return graph
 
     def get(self, graph_id: str, dirs: SessionDirs) -> Any:
         """The graph for *dirs*, built on a miss. Blocking."""
@@ -139,11 +158,17 @@ class GraphCache:
             dirs = SessionDirs(dirs.workspace)
         run_dir = dirs.run_dir.as_posix() if dirs.run_dir is not None else None
         key = (graph_id, dirs.workspace.key, run_dir)
-        if (graph := self._graphs.get(key)) is not None:
+        if (graph := self._cached(key)) is not None:
             return graph
         with self._build_lock:
-            if (graph := self._graphs.get(key)) is None:
-                graph = self._graphs[key] = _build(graph_id, dirs)
+            if (graph := self._cached(key)) is not None:
+                return graph
+            graph = _build(graph_id, dirs)
+            with self._lock:
+                self._graphs[key] = graph
+                run_folder_keys = [k for k in self._graphs if k[2] is not None]
+                for stale in run_folder_keys[: -self.RUN_FOLDER_GRAPHS]:
+                    del self._graphs[stale]
             return graph
 
 
@@ -156,23 +181,44 @@ def prebuild(dirs: SessionDirs) -> None:
         GRAPHS.get(graph_id, dirs)
 
 
-def _graph_for(graph_id: str, config: dict[str, Any], running: bool) -> Any:
-    if running:
-        check_run_folders(config, works_in_folder=graph_id in FOLDER_GRAPH_IDS)
-    return GRAPHS.get(graph_id, process_session_dirs())
+def _graph_for(
+    graph_id: str, config: dict[str, Any], access: str
+) -> tuple[Any, SessionDirs | None]:
+    """The graph for an access, and the folders its writes are stamped with."""
+    configurable = config.get("configurable") or {}
+    thread_id = configurable.get("thread_id")
+    writes = access in ("threads.create_run", "threads.update")
+    served = process_session_dirs()
+    try:
+        bound = thread_binding(thread_id) if thread_id and writes else None
+        stamp = resolve_folders(graph_id, access, configurable, served, bound)
+    except (RunFolderMismatchError, ThreadBindingError) as exc:
+        if access == "threads.create_run":
+            # A run's error reaches its client by name.
+            raise
+        status = 409 if isinstance(exc, RunFolderMismatchError) else 503
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return GRAPHS.get(graph_id, stamp or served), stamp
 
 
 def served_graph(graph_id: str) -> Callable[..., Awaitable[Any]]:
     """The factory registered for *graph_id* in ``langgraph.json``.
 
-    Serves the folders this server serves. A run that forwards other folders
-    is refused before it executes (``check_run_folders``).
+    Picks the folders of each access from its thread's binding and its
+    request (``folder_check.resolve_folders``), refusing an access this server
+    must not serve, and hands them to the checkpointer to stamp.
     """
 
     async def factory(config: dict[str, Any], runtime: ServerRuntime) -> Any:
-        # Resolving folders and building touch the disk, which blockbuster
-        # refuses on the event loop.
-        running = runtime.execution_runtime is not None
-        return await asyncio.to_thread(_graph_for, graph_id, config, running)
+        # Reading the binding, resolving folders and building touch the disk,
+        # which blockbuster refuses on the event loop.
+        graph, stamp = await asyncio.to_thread(
+            _graph_for, graph_id, config, runtime.access_context
+        )
+        # Set here, in the access's own task, so the checkpoint writes of the
+        # run or update that follow see it; a value set in the worker thread
+        # would stay there.
+        RESOLVED_FOLDERS.set(stamp)
+        return graph
 
     return factory

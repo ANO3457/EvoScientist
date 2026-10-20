@@ -52,32 +52,6 @@ def test_workspace_assistant_fields_match_the_webui():
     }
 
 
-@pytest.fixture
-def runtime_store(monkeypatch):
-    """The in-memory runtime's store, empty, with every served graph registered."""
-    # Read when langgraph-api's config is first imported, as in the server.
-    for name, value in {
-        "LANGGRAPH_RUNTIME_EDITION": "inmem",
-        "REDIS_URI": "fake",
-        "DATABASE_URI": ":memory:",
-        "MIGRATIONS_PATH": "__inmem",
-    }.items():
-        monkeypatch.setenv(name, value)
-    import langgraph_api.graph as lg_graph
-    from langgraph_runtime_inmem.database import GLOBAL_STORE
-
-    for graph_id in served_graph_ids():
-        monkeypatch.setitem(lg_graph.GRAPHS, graph_id, object())
-    saved = {
-        key: list(GLOBAL_STORE.get(key, []))
-        for key in ("assistants", "assistant_versions")
-    }
-    GLOBAL_STORE["assistants"] = []
-    GLOBAL_STORE["assistant_versions"] = []
-    yield GLOBAL_STORE
-    GLOBAL_STORE.update(saved)
-
-
 def _assistant(store, assistant_id):
     (found,) = [
         a for a in store["assistants"] if a["assistant_id"] == uuid.UUID(assistant_id)

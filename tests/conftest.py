@@ -1,5 +1,6 @@
 """Shared fixtures for EvoScientist tests."""
 
+import logging
 import os
 from pathlib import Path
 
@@ -195,6 +196,36 @@ def _isolate_user_dirs(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(mcp_client, "USER_MCP_CONFIG", config_dir / "mcp.yaml")
     monkeypatch.setattr(update_check, "CACHE_DIR", config_dir)
     monkeypatch.setattr(update_check, "CACHE_FILE", config_dir / "latest_version.json")
+
+
+@pytest.fixture
+def runtime_store(monkeypatch):
+    """The in-memory runtime's store, empty, with every served graph registered."""
+    # Read when langgraph-api's config is first imported, as in the server.
+    for name, value in {
+        "LANGGRAPH_RUNTIME_EDITION": "inmem",
+        "REDIS_URI": "fake",
+        "DATABASE_URI": ":memory:",
+        "MIGRATIONS_PATH": "__inmem",
+    }.items():
+        monkeypatch.setenv(name, value)
+    # Importing langgraph-api's logging sets the root logger's level.
+    root = logging.getLogger()
+    level = root.level
+    import langgraph_api.graph as lg_graph
+    from langgraph_runtime_inmem.database import GLOBAL_STORE
+
+    from EvoScientist.langgraph_dev.assistants import served_graph_ids
+
+    for graph_id in served_graph_ids():
+        monkeypatch.setitem(lg_graph.GRAPHS, graph_id, object())
+    tables = ("assistants", "assistant_versions", "threads", "runs")
+    saved = {key: list(GLOBAL_STORE.get(key, [])) for key in tables}
+    for key in tables:
+        GLOBAL_STORE[key] = []
+    yield GLOBAL_STORE
+    GLOBAL_STORE.update(saved)
+    root.setLevel(level)
 
 
 @pytest.fixture(autouse=True)

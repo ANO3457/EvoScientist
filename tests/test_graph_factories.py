@@ -50,6 +50,29 @@ def test_graph_cache_builds_folder_graphs_per_run_folder(builds, tmp_path):
     assert builds == [("writing-agent", run_a), ("writing-agent", run_b)]
 
 
+def test_graph_cache_drops_least_recently_used_run_folder_graphs(
+    builds, monkeypatch, tmp_path
+):
+    """Project graphs stay; run-folder graphs past the cap are rebuilt."""
+    monkeypatch.setattr(GraphCache, "RUN_FOLDER_GRAPHS", 2)
+    workspace = Workspace(tmp_path)
+    graphs = GraphCache()
+    run_a, run_b, run_c = (
+        SessionDirs(workspace, workspace.runs_dir / name) for name in "abc"
+    )
+    project = graphs.get("scheduler", run_a)
+    graphs.get("writing-agent", run_a)
+    graphs.get("writing-agent", run_b)
+    graphs.get("writing-agent", run_a)
+    graphs.get("writing-agent", run_c)
+    builds.clear()
+
+    graphs.get("writing-agent", run_a)
+    graphs.get("writing-agent", run_b)
+    assert graphs.get("scheduler", run_c) is project
+    assert builds == [("writing-agent", run_b)]
+
+
 def test_graph_cache_builds_one_graph_at_a_time(monkeypatch, tmp_path):
     """Builds share process-wide state, so concurrent accesses never overlap
     them, and the same graph is not built twice."""

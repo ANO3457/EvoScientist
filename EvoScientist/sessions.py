@@ -31,9 +31,11 @@ import asyncio
 import atexit
 import logging
 import math
+import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1707,24 +1709,117 @@ async def _api_session_dirs_async() -> SessionDirs:
     return await asyncio.to_thread(_api_session_dirs)
 
 
-# Graphs the server builds for the session's folder (see ``langgraph_dev.factories``).
-# Every other graph works in the workspace root, so its rows carry no ``run_dir`` and
-# its runs are checked against the workspace only.
+# Graphs the server builds for a thread's run folder (see
+# ``langgraph_dev.factories``). Every other graph works in the workspace root, so
+# only the workspace of its runs is checked.
 FOLDER_GRAPH_IDS = frozenset(
     {AGENT_NAME, "writing-agent", "data-analysis-agent", "expert-container-async"}
 )
 
 
-class _ApiPruningCheckpointer(PruningCheckpointer):
-    """``PruningCheckpointer`` that stamps CLI-compatible ownership metadata.
+# The folders the graph factory decided for the current access to a graph:
+# ``None`` when there is nothing to stamp. Unset when a write did not go
+# through a factory: the runtime's thread copy replays the source's rows,
+# already stamped.
+RESOLVED_FOLDERS: ContextVar[SessionDirs | None] = ContextVar(
+    "evoscientist_resolved_folders"
+)
 
-    langgraph-api run metadata carries ``graph_id``/``assistant_id`` but not
-    always the ``workspace_dir`` / ``updated_at`` keys needed to safely
-    rebuild the in-memory thread registry after server restart. Stamping graph
-    rows with the current workspace keeps main and async-subagent threads
-    restorable without exposing other workspaces. Memory-worker rows still get
-    workspace metadata, but remain disposable until worker cloning lands.
-    Only graphs that work in the session's folder get its ``run_dir``.
+
+class ThreadBindingError(RuntimeError):
+    """A thread's binding could not be read."""
+
+
+# A thread's binding: its newest root-namespace checkpoint that carries
+# ``workspace_dir``. Checkpoint IDs grow with time.
+_STAMPED_ROOT_ROW = (
+    "checkpoint_ns = '' AND json_extract(metadata, '$.workspace_dir') IS NOT NULL"
+)
+_BINDING_ROW = f"""
+    SELECT json_extract(metadata, '$.workspace_dir'),
+           json_extract(metadata, '$.run_dir')
+    FROM checkpoints
+    WHERE thread_id = ? AND {_STAMPED_ROOT_ROW}
+    ORDER BY checkpoint_id DESC
+    LIMIT 1
+"""
+_BINDING_ROWS = f"""
+    SELECT thread_id,
+           json_extract(metadata, '$.workspace_dir'),
+           json_extract(metadata, '$.run_dir')
+    FROM (
+        SELECT thread_id, metadata,
+               ROW_NUMBER() OVER (
+                   PARTITION BY thread_id ORDER BY checkpoint_id DESC
+               ) AS newest
+        FROM checkpoints
+        WHERE {_STAMPED_ROOT_ROW}
+          AND thread_id LIKE '________-____-____-____-____________'
+    )
+    WHERE newest = 1
+"""
+
+
+def thread_binding(thread_id: str) -> SessionDirs | None:
+    """The folders *thread_id* is bound to, or ``None`` for an unbound thread.
+
+    Raises :class:`ThreadBindingError` when the binding cannot be read: an
+    unread binding must not pass for an unbound thread. Blocking (reads
+    ``sessions.db`` and resolves paths): call it off the event loop on the
+    server.
+    """
+    try:
+        conn = sqlite3.connect(get_db_path(), timeout=30.0)
+        try:
+            row = conn.execute(_BINDING_ROW, (str(thread_id),)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.ProgrammingError:
+        raise
+    except (sqlite3.Error, OSError) as exc:
+        if "no such table" in str(exc):
+            return None
+        raise ThreadBindingError(
+            f"Could not read the folders of conversation {thread_id}: {exc}"
+        ) from exc
+    if row is None:
+        return None
+    dirs = SessionDirs.from_stored(*row)
+    if dirs is None:
+        raise ThreadBindingError(
+            f"Conversation {thread_id} is stored with folders that cannot be "
+            f"read: {row[0]!r}"
+        )
+    return dirs
+
+
+def _without_folders(config: Any) -> Any:
+    """*config* with no ``workspace_dir`` / ``run_dir`` in ``configurable`` or
+    ``metadata``, the two the saver copies into checkpoint metadata."""
+    if not isinstance(config, dict):
+        return config
+    return {
+        **config,
+        **{
+            name: {
+                key: value
+                for key, value in section.items()
+                if key not in ("workspace_dir", "run_dir")
+            }
+            for name in ("configurable", "metadata")
+            if isinstance(section := config.get(name), dict)
+        },
+    }
+
+
+class _ApiPruningCheckpointer(PruningCheckpointer):
+    """``PruningCheckpointer`` that stamps each row with its thread's folders.
+
+    The graph factory decides the folders of every run and state update
+    (:data:`RESOLVED_FOLDERS`) and only those are stamped, whatever folders
+    the request carried, so the newest stamped row is the thread's binding.
+    Rows a thread copy replays keep their stamps. ``updated_at`` orders the
+    restored thread registry.
 
     Only the main graph receives ``agent_name``. The local CLI session
     surface still uses that ownership key, so worker/subagent graph rows must
@@ -1738,19 +1833,24 @@ class _ApiPruningCheckpointer(PruningCheckpointer):
         metadata: Any,
         new_versions: Any,
     ) -> Any:
-        if isinstance(metadata, dict) and isinstance(metadata.get("graph_id"), str):
+        if isinstance(metadata, dict):
             metadata = dict(metadata)
-            # Resolving the server's folders is a blocking syscall flagged by
-            # the dev runtime's blockbuster guard. Run it in a thread, and only
-            # when the run did not bring its own folders.
-            if "workspace_dir" not in metadata:
-                dirs = await _api_session_dirs_async()
-                if metadata["graph_id"] not in FOLDER_GRAPH_IDS:
-                    dirs = SessionDirs(dirs.workspace)
-                metadata.update(dirs.metadata())
-            metadata["updated_at"] = datetime.now(UTC).isoformat()
-            if metadata.get("graph_id") == AGENT_NAME:
-                metadata.setdefault("agent_name", AGENT_NAME)
+            try:
+                dirs = RESOLVED_FOLDERS.get()
+            except LookupError:
+                pass
+            else:
+                metadata.pop("workspace_dir", None)
+                metadata.pop("run_dir", None)
+                if dirs is not None:
+                    metadata.update(dirs.metadata())
+                # The saver copies scalar config values the metadata lacks into
+                # it, and a request can put folders in the config.
+                config = _without_folders(config)
+            if isinstance(metadata.get("graph_id"), str):
+                metadata["updated_at"] = datetime.now(UTC).isoformat()
+                if metadata["graph_id"] == AGENT_NAME:
+                    metadata.setdefault("agent_name", AGENT_NAME)
         return await super().aput(config, checkpoint, metadata, new_versions)
 
 
@@ -1823,11 +1923,12 @@ async def _restore_webui_threads_to_global_store() -> bool:
     are normalized in place, and missing threads are appended as stub
     dicts that satisfy ``POST /threads/search``.
 
-    Restore scope — UUID-format graph threads owned by this server's
-    workspace (``metadata.workspace_dir`` names the same root, in any run
-    folder). The registry holds the root in ``workspace_dir`` and the run
-    folder in ``run_dir``; rows from before ``run_dir`` existed were upgraded
-    by :func:`_upgrade_stored_dirs` when the server opened the DB. This includes the main
+    Restore scope — UUID-format graph threads bound to this server's
+    workspace (their binding, :func:`thread_binding`, names the same root, in
+    any run folder). The registry holds the root in ``workspace_dir``, the
+    run folder in ``run_dir``. Rows from before ``run_dir`` existed were
+    upgraded by :func:`_upgrade_stored_dirs` when the server opened the DB.
+    This includes the main
     graph and async-subagent graphs. Memory-worker graphs are excluded for now:
     they are still treated as disposable residue until worker cloning lands.
     The workspace filter is required because sessions.db is machine-global,
@@ -1867,7 +1968,7 @@ async def _restore_webui_threads_to_global_store() -> bool:
         # predating workspace stamping remain deliberately excluded.
         current_workspace = (await _api_session_dirs_async()).workspace.key
         sqlite_data: dict[uuid.UUID, _RestoredThreadInfo] = {}
-        titles: dict[uuid.UUID, str] = {}
+        bindings: dict[str, tuple[str, str | None]] = {}
         db_path = str(get_db_path())
         async with aiosqlite.connect(db_path, timeout=30.0) as conn:
             # No checkpoints table (fresh DB) → rows stays empty, but the
@@ -1879,16 +1980,14 @@ async def _restore_webui_threads_to_global_store() -> bool:
                 # Every metadata field is MAX-aggregated: an interop thread
                 # mixes CLI rows (no assistant_id/graph_id) with WebUI rows,
                 # and a bare column under GROUP BY would let SQLite pick an
-                # arbitrary row's NULL.
+                # arbitrary row's NULL. The folders are the thread's binding.
                 query = """
                     SELECT thread_id,
                            MAX(json_extract(metadata, '$.updated_at')) as updated_at,
                            MAX(json_extract(metadata, '$.assistant_id')) as assistant_id,
                            MAX(json_extract(metadata, '$.graph_id')) as graph_id,
-                           MAX(json_extract(metadata, '$.workspace_dir')) as workspace_dir,
                            MAX(json_extract(metadata, '$.model')) as model,
-                           MAX(json_extract(metadata, '$.agent_name')) as agent_name,
-                           MAX(json_extract(metadata, '$.run_dir')) as run_dir
+                           MAX(json_extract(metadata, '$.agent_name')) as agent_name
                     FROM checkpoints
                     WHERE thread_id LIKE '________-____-____-____-____________'
                       AND (
@@ -1900,8 +1999,11 @@ async def _restore_webui_threads_to_global_store() -> bool:
                 """
                 async with conn.execute(query) as cur:
                     rows = list(await cur.fetchall())
+                async with conn.execute(_BINDING_ROWS) as cur:
+                    async for tid, workspace_dir, run_dir in cur:
+                        bindings[tid] = (workspace_dir, run_dir)
             stored_dirs = await asyncio.to_thread(
-                _stored_session_dirs, [(row[4], row[7]) for row in rows]
+                _stored_session_dirs, list(bindings.values())
             )
 
             for row in rows:
@@ -1910,20 +2012,19 @@ async def _restore_webui_threads_to_global_store() -> bool:
                     updated_at,
                     assistant_id,
                     graph_id,
-                    workspace_dir,
                     model,
                     agent_name,
-                    run_dir,
                 ) = row
                 thread_uuid = _to_uuid_safe(thread_id_str)
-                if thread_uuid is None:
+                binding = bindings.get(thread_id_str)
+                if thread_uuid is None or binding is None:
                     continue
                 restored_graph_id = graph_id
                 if restored_graph_id is None and agent_name == AGENT_NAME:
                     restored_graph_id = AGENT_NAME
                 if restored_graph_id is None:
                     continue
-                dirs = stored_dirs[(workspace_dir, run_dir)]
+                dirs = stored_dirs[binding]
                 if dirs is None or dirs.workspace.key != current_workspace:
                     continue
                 stored = dirs.metadata()
@@ -1935,20 +2036,6 @@ async def _restore_webui_threads_to_global_store() -> bool:
                     run_dir=stored.get("run_dir"),
                     model=model,
                 )
-
-            # Derive a sidebar title from each scoped thread's first human
-            # message (stubs carry values=None, so the WebUI would otherwise
-            # render every restored thread as "Untitled Thread").
-            if sqlite_data:
-                saver = AsyncSqliteSaver(conn, serde=JsonPlusSerializer())
-                for thread_uuid in sqlite_data:
-                    try:
-                        msgs = await _load_checkpoint_messages(saver, str(thread_uuid))
-                        preview = _extract_preview(msgs)
-                        if preview:
-                            titles[thread_uuid] = preview
-                    except Exception:
-                        continue
 
         def _parse_dt(s: str | None) -> datetime:
             """Parse an ISO timestamp string to datetime, falling back to now."""
@@ -2008,9 +2095,6 @@ async def _restore_webui_threads_to_global_store() -> bool:
                 if info.model and meta.get("model") != info.model:
                     meta["model"] = info.model
                     changed = True
-                if "title" not in meta and tid_uuid in titles:
-                    meta["title"] = titles[tid_uuid]
-                    changed = True
             # State.get() KeyErrors without "config".
             if "config" not in entry:
                 entry["config"] = {}
@@ -2039,8 +2123,6 @@ async def _restore_webui_threads_to_global_store() -> bool:
                 stub_metadata["assistant_id"] = str(info.assistant_id)
             if info.model:
                 stub_metadata["model"] = info.model
-            if thread_uuid in titles:
-                stub_metadata["title"] = titles[thread_uuid]
             ts = _parse_dt(info.updated_at)
             stub: dict[str, Any] = {
                 "thread_id": thread_uuid,
@@ -2144,9 +2226,10 @@ async def create_checkpointer_for_langgraph_api() -> AsyncIterator[PruningCheckp
     bad row only loses that row. The langgraph-api adapter detects async
     context managers and enters them automatically.
 
-    The yielded ``_ApiPruningCheckpointer`` stamps graph rows with
-    ``workspace_dir`` / ``updated_at`` so they can be restored into the
-    LangGraph server registry. Main-graph rows also get ``agent_name`` so
+    The yielded ``_ApiPruningCheckpointer`` stamps rows with their thread's
+    folders (the binding the graph factory resolved) and graph rows with
+    ``updated_at``, so they can be restored into the LangGraph server
+    registry. Main-graph rows also get ``agent_name`` so
     WebUI threads surface in the CLI session commands and participate in
     ``_prune_after_put`` retention.
 

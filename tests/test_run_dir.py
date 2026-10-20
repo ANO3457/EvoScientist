@@ -590,8 +590,10 @@ async def test_cli_and_server_upgrade_before_reading(
     assert restored["metadata"]["run_dir"] == run_meta["run_dir"]
 
 
-def _stamped(run_dirs: SessionDirs, monkeypatch, graph_id: str) -> dict:
-    """Metadata the server's checkpointer writes for an unstamped row."""
+def _stamped(folders: SessionDirs, monkeypatch) -> dict:
+    """Metadata the server's checkpointer writes after a factory decided *folders*."""
+    import contextvars
+
     import EvoScientist.sessions as sessions
 
     captured: dict = {}
@@ -599,24 +601,26 @@ def _stamped(run_dirs: SessionDirs, monkeypatch, graph_id: str) -> dict:
     async def _fake_super_aput(self, config, checkpoint, metadata, new_versions):
         captured.update(metadata)
 
-    monkeypatch.setattr(sessions, "_api_session_dirs", lambda: run_dirs)
+    async def _put():
+        sessions.RESOLVED_FOLDERS.set(folders)
+        saver = object.__new__(sessions._ApiPruningCheckpointer)
+        await saver.aput({}, {}, {"graph_id": "writing-agent"}, {})
+
     monkeypatch.setattr(sessions.PruningCheckpointer, "aput", _fake_super_aput)
-    saver = object.__new__(sessions._ApiPruningCheckpointer)
-    asyncio.run(saver.aput({}, {}, {"graph_id": graph_id}, {}))
+    contextvars.copy_context().run(asyncio.run, _put())
     return captured
 
 
-def test_server_stamps_its_run_folder_on_unstamped_rows(run_dirs, monkeypatch):
-    stamped = _stamped(run_dirs, monkeypatch, "writing-agent")
+def test_server_stamps_resolved_run_folder(run_dirs, monkeypatch):
+    stamped = _stamped(run_dirs, monkeypatch)
 
     assert stamped["workspace_dir"] == run_dirs.workspace.key
     assert stamped["run_dir"] == run_dirs.run_dir.as_posix()
 
 
-@pytest.mark.parametrize("graph_id", ["scheduler", "evomemory-turn-worker"])
-def test_server_stamps_root_graph_rows_without_run_dir(run_dirs, monkeypatch, graph_id):
+def test_server_stamps_root_folders_without_run_dir(run_dirs, monkeypatch):
     """Scheduled tasks and memory workers work in the workspace root."""
-    stamped = _stamped(run_dirs, monkeypatch, graph_id)
+    stamped = _stamped(SessionDirs(run_dirs.workspace), monkeypatch)
 
     assert stamped["workspace_dir"] == run_dirs.workspace.key
     assert "run_dir" not in stamped

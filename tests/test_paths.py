@@ -185,6 +185,21 @@ class TestSessionDirs:
         assert "run_dir" not in dirs.metadata()
 
 
+class TestWorkspaceIsRunFolder:
+    def test_folder_under_runs_is_run_folder(self, tmp_path):
+        assert Workspace(tmp_path).is_run_folder(tmp_path / "runs" / "a")
+
+    def test_other_spellings_are_not_run_folders(self, tmp_path):
+        workspace = Workspace(tmp_path)
+        for path in (
+            tmp_path / "runs",
+            tmp_path / "runs" / "a" / "..",
+            tmp_path / "runs" / "a" / "b",
+            tmp_path / "other" / "runs" / "a",
+        ):
+            assert not workspace.is_run_folder(path)
+
+
 class TestSessionDirsFromStored:
     def test_nothing_stored(self):
         assert SessionDirs.from_stored(None) is None
@@ -207,6 +222,26 @@ class TestSessionDirsFromStored:
             str(tmp_path / "a"), str(tmp_path / "b" / "runs" / "20260930_120000")
         )
         assert dirs == SessionDirs(Workspace(tmp_path / "a"))
+
+    def test_other_folder_inside_workspace_is_dropped(self, tmp_path):
+        workspace = Workspace(tmp_path)
+        for run_dir in (tmp_path / "memories", tmp_path / "runs" / "a" / "b"):
+            assert SessionDirs.from_stored(str(tmp_path), str(run_dir)) == (
+                SessionDirs(workspace)
+            )
+        run = tmp_path / "runs" / "a"
+        assert SessionDirs.from_stored(str(tmp_path), str(run)) == SessionDirs(
+            workspace, run
+        )
+
+    def test_runs_folder_linked_outside_workspace_is_dropped(self, tmp_path):
+        """Not supported: the run folder resolves outside the workspace."""
+        root, disk = tmp_path / "ws", tmp_path / "disk"
+        root.mkdir()
+        disk.mkdir()
+        (root / "runs").symlink_to(disk, target_is_directory=True)
+        dirs = SessionDirs.from_stored(str(root), str(root / "runs" / "a"))
+        assert dirs == SessionDirs(Workspace(root))
 
     def test_unreadable_value_reads_as_nothing_stored(self):
         assert SessionDirs.from_stored("/tmp/evil\x00x") is None
