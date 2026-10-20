@@ -22,6 +22,8 @@ import typer
 from EvoScientist import paths
 from EvoScientist.deploy import json_mode
 from EvoScientist.deploy import server as deploy_server
+from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
+from EvoScientist.paths import Workspace
 
 
 def _config(**overrides):
@@ -226,7 +228,9 @@ def test_owned_run_prints_starting_ready_stopped(h, capsys):
     assert ready["url"] == "http://127.0.0.1:6174"
     assert ready["owned"] is True
     assert ready["workspace"] == h.workspace
-    assert ready["assistant_id"] == "EvoScientist"
+    assert ready["assistant_id"] == workspace_assistant_id(
+        "EvoScientist", Workspace(h.workspace)
+    )
     assert ready["warnings"] == []
     assert "mode" not in ready
     assert "public_url" not in ready

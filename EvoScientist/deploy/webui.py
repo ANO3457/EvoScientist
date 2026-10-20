@@ -198,12 +198,16 @@ def run_webui(config: Any, workspace_dir: str | None = None) -> None:
             f"point the UI at [bold]http://<this-machine-ip>:{cfg.backend_port}"
             f"[/bold].\n"
         )
+    from ..langgraph_dev.assistants import chat_assistant_id
+    from ..paths import Workspace
+
+    assistant_id = chat_assistant_id(Workspace(cfg.workspace_dir))
     console.print(
         Panel(
             Text.from_markup(
                 f"[bold]Backend:[/bold]  "
                 f"{_base_url(cfg.backend_port, cfg.backend_host)}  "
-                f"[dim](langgraph dev — Assistant: EvoScientist)[/dim]\n"
+                f"[dim](langgraph dev — Assistant: {assistant_id})[/dim]\n"
                 f"[bold]WebUI:[/bold]    "
                 f"http://{_format_hostport(cfg.webui_host, cfg.webui_port)}  "
                 f"[dim]({browser_note})[/dim]\n"

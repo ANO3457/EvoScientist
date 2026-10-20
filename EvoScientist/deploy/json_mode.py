@@ -85,11 +85,11 @@ import time
 import traceback
 from typing import Any
 
+from ..langgraph_dev.assistants import chat_assistant_id
+from ..paths import Workspace
 from ..setup.protocol import PROTOCOL, JsonEmitter, stdin_is_pipe
 
 logger = logging.getLogger(__name__)
-
-ASSISTANT_ID = "EvoScientist"
 
 # The ``detail`` of each is in the module docstring. ``internal_error``:
 # anything else, with the traceback on stderr.
@@ -336,7 +336,7 @@ class _Run:
             "url": lgm._base_url(self.port, self.host),
             "owned": owned,
             "workspace": workspace,
-            "assistant_id": ASSISTANT_ID,
+            "assistant_id": chat_assistant_id(Workspace(workspace)),
             "data_dir": data_dir,
             "config_dir": config_dir,
             "log_file": str(lgm.RUNTIME.log_file),

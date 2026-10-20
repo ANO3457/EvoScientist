@@ -16,7 +16,6 @@ from pydantic import BaseModel
 from ... import paths as _paths
 from ...paths import Workspace
 
-MEMORY_AGENT_RECURSION_LIMIT = 100
 MEMORY_MAINTENANCE_EXCLUDED_TOOLS = frozenset(
     {
         "delete",
@@ -77,7 +76,6 @@ def build_memory_agent_graph(
     workspace_dir: str | Path,
     tools: Sequence[BaseTool],
     middleware: Sequence[AgentMiddleware],
-    recursion_limit: int = MEMORY_AGENT_RECURSION_LIMIT,
     response_format: type[BaseModel] | None = None,
     skills: list[str] | None = None,
     backend: BackendProtocol | None = None,
@@ -86,7 +84,7 @@ def build_memory_agent_graph(
     from deepagents import create_deep_agent
 
     from ...backends import build_memory_agent_backend
-    from ...EvoScientist import _ensure_auxiliary_chat_model
+    from ...EvoScientist import _ensure_auxiliary_chat_model, _ensure_config
     from ...middleware.utils import structured_output_for
 
     model = _ensure_auxiliary_chat_model()
@@ -111,4 +109,4 @@ def build_memory_agent_graph(
         skills=skills,
         **kwargs,
     )
-    return agent.with_config({"recursion_limit": recursion_limit})
+    return agent.with_config({"recursion_limit": _ensure_config().recursion_limit})

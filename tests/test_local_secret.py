@@ -17,6 +17,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from EvoScientist import local_secret, paths
+from EvoScientist.langgraph_dev import assistants
 from EvoScientist.langgraph_dev.http import app
 
 posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
@@ -186,10 +187,17 @@ def test_open_new_retries_a_briefly_locked_file_on_windows(tmp_path, monkeypatch
     assert len(calls) == 3
 
 
+async def _no_assistants(_workspace):
+    return None
+
+
 @pytest.fixture
 def server(monkeypatch, caplog):
     """The custom app with its lifespan run, as langgraph-api runs it."""
     monkeypatch.setattr(local_secret, "_value", None)
+    # The lifespan also ensures the served workspace's assistants, which needs
+    # the runtime's store (see test_workspace_assistants).
+    monkeypatch.setattr(assistants, "ensure_workspace_assistants", _no_assistants)
     caplog.set_level(logging.DEBUG)
     with TestClient(
         app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)
@@ -218,6 +226,7 @@ def test_verify_route_refuses_when_the_file_is_unusable(content, monkeypatch, ca
     """The server still starts; only routes that need the secret refuse."""
     _write_secret_file(content)
     monkeypatch.setattr(local_secret, "_value", None)
+    monkeypatch.setattr(assistants, "ensure_workspace_assistants", _no_assistants)
     with TestClient(app, base_url="http://localhost") as client:
         response = client.get(
             "/api/local-secret/verify", headers={local_secret.HEADER: ""}

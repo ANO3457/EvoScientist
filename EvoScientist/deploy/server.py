@@ -282,13 +282,17 @@ def deploy(
     # 9. Ready banner
     log_hint = _shorten(str(RUNTIME.log_file))
     public_line = f"[bold]Public URL:[/bold]   {public_url}\n" if public_url else ""
+    from ..langgraph_dev.assistants import chat_assistant_id
+    from ..paths import Workspace
+
+    assistant_id = chat_assistant_id(Workspace(ws))
     console.print(
         Panel(
             Text.from_markup(
                 f"[bold]Endpoint:[/bold]     "
                 f"{_base_url(effective_port, effective_host)}\n"
                 f"{public_line}"
-                f"[bold]Assistant ID:[/bold] EvoScientist\n"
+                f"[bold]Assistant ID:[/bold] {assistant_id}\n"
                 f"[bold]Connect via:[/bold]  any LangChain SDK / "
                 f"LangGraph-compatible UI\n"
                 f"[bold]Logs:[/bold]         {log_hint}\n\n"
