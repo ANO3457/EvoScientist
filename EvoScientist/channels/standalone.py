@@ -135,6 +135,7 @@ async def _async_main(
             manager=manager,
             agent=agent,
             thread_id="",
+            workspace=workspace,
             graph_gateway=runtime_gateways.graph_gateway,
             send_thinking=send_thinking,
         )

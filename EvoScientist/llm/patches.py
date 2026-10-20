@@ -935,7 +935,8 @@ def _merge_runs_config_kwargs(
 
     ``folders`` are the launching graph's ``workspace_dir`` / ``run_dir``;
     they replace any the caller passed, so the server can refuse a run meant
-    for other folders.
+    for other folders. A run named by its graph goes to that graph's
+    assistant for the folders' workspace, which stands for the project.
 
     Model source, in increasing precedence:
 
@@ -975,6 +976,12 @@ def _merge_runs_config_kwargs(
     merged_configurable = {**existing_configurable, **overrides}
     kwargs = dict(kwargs)
     kwargs["config"] = {**existing, "configurable": merged_configurable}
+    if isinstance(kwargs.get("assistant_id"), str):
+        from EvoScientist.langgraph_dev.assistants import launch_assistant_id
+
+        kwargs["assistant_id"] = launch_assistant_id(
+            kwargs["assistant_id"], (folders or {}).get("workspace_dir")
+        )
     return kwargs
 
 

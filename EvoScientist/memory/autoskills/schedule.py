@@ -16,6 +16,7 @@ from ...cron.schedule import (
     search_all,
     workspace_key,
 )
+from ...langgraph_dev.assistants import launch_assistant_id
 from ...langgraph_dev.sdk import (
     default_scheduler_timezone,
     get_langgraph_async_client,
@@ -110,6 +111,10 @@ def reconcile_autoskill_schedule(
     """Ensure the workspace's hidden AutoSkills cron matches config.
 
     Only this workspace's AutoSkills crons are listed, replaced or deleted.
+    A cron that matches is kept and any other is deleted; without one, the
+    replacement is created before the old crons are deleted, so a failed
+    create leaves them running. A failed delete raises; the next reconcile
+    keeps the matching cron and deletes the rest.
     """
     from ...langgraph_dev.manager import is_langgraph_dev_running
 
@@ -129,8 +134,9 @@ def reconcile_autoskill_schedule(
         config.memory_skill_synthesis_time,
     )
     metadata = _autoskill_metadata(config=config, schedule=schedule)
-    # A cron created before its runs forwarded the workspace is replaced, so
-    # its runs carry ``configurable.workspace_dir`` too.
+    # A cron created before its runs forwarded the workspace, or before they
+    # ran on the workspace's assistant, does not match.
+    assistant_id = launch_assistant_id(AUTOSKILL_GRAPH_ID, workspace)
     matching = [
         row
         for row in existing
@@ -138,21 +144,26 @@ def reconcile_autoskill_schedule(
         and bool(row.get("enabled", True))
         and (row.get("metadata") or {}).get("mode") == metadata["mode"]
         and _forwarded_workspace(row) == workspace.key
+        and str(row.get("assistant_id")) == assistant_id
     ]
-    if len(matching) == 1 and len(existing) == 1:
-        return {"status": "unchanged", "cron_id": matching[0].get("cron_id")}
+    if matching:
+        kept = matching[0]
+        for row in existing:
+            if row is not kept:
+                delete_cron(client, row, workspace=workspace)
+        return {"status": "unchanged", "cron_id": kept.get("cron_id")}
 
-    for row in existing:
-        delete_cron(client, row, workspace=workspace)
     created = create_cron(
         client,
         workspace=workspace,
-        assistant_id=AUTOSKILL_GRAPH_ID,
+        graph_id=AUTOSKILL_GRAPH_ID,
         schedule=schedule,
         input=_autoskill_input(),
         metadata=metadata,
         timezone=default_scheduler_timezone(config),
     )
+    for row in existing:
+        delete_cron(client, row, workspace=workspace)
     return {
         "status": "created",
         "cron_id": created.get("cron_id"),
@@ -175,7 +186,7 @@ def run_autoskill_now(
     )
     run = client.runs.create(
         thread_id=str(thread["thread_id"]),
-        assistant_id=AUTOSKILL_GRAPH_ID,
+        assistant_id=launch_assistant_id(AUTOSKILL_GRAPH_ID, workspace),
         input=_autoskill_input(),
         metadata={**_autoskill_metadata(config=config, schedule="manual"), **folders},
         config=run_config(workspace, thread_id=str(thread["thread_id"])),
@@ -198,7 +209,7 @@ async def arun_autoskill_now(
     )
     run = await client.runs.create(
         thread_id=str(thread["thread_id"]),
-        assistant_id=AUTOSKILL_GRAPH_ID,
+        assistant_id=launch_assistant_id(AUTOSKILL_GRAPH_ID, workspace),
         input=_autoskill_input(),
         metadata={**_autoskill_metadata(config=config, schedule="manual"), **folders},
         config=run_config(workspace, thread_id=str(thread["thread_id"])),

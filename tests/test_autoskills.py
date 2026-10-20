@@ -12,6 +12,7 @@ from EvoScientist.config import (
     save_config,
     set_config_value,
 )
+from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
 from EvoScientist.memory.autoskills.candidates import autoskill_candidates
 from EvoScientist.memory.autoskills.proposals import (
     approve_skill_proposal,
@@ -1007,12 +1008,14 @@ def test_reconcile_autoskill_schedule_creates_updates_and_disables(
     assert unchanged["status"] == "unchanged"
     assert updated["status"] == "created"
     assert disabled == {"status": "disabled", "deleted": 1}
-    assert crons.deleted == ["cron-1", "cron-1"]
+    # The update creates its cron before deleting the old one.
+    assert crons.deleted == ["cron-1", "cron-2"]
     assert crons.rows == []
     assert created["schedule"] == "0 3 * * 0"
     assert updated["schedule"] == "0 3 * * *"
     assert created["cron_id"] == "cron-1"
+    assistant_id = workspace_assistant_id(AUTOSKILL_GRAPH_ID, Workspace(tmp_path))
     assert [row["assistant_id"] for row in crons.created] == [
-        AUTOSKILL_GRAPH_ID,
-        AUTOSKILL_GRAPH_ID,
+        assistant_id,
+        assistant_id,
     ]

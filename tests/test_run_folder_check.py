@@ -515,8 +515,11 @@ def test_manual_autoskills_runs_forward_the_root(workspace, monkeypatch):
     monkeypatch.setattr(schedule, "langgraph_dev_url", lambda _c: "http://x")
     schedule.run_autoskill_now(config, workspace_dir=workspace.root)
 
-    configurable = client.runs.create.call_args.kwargs["config"]["configurable"]
-    assert configurable["workspace_dir"] == workspace.key
+    run = client.runs.create.call_args.kwargs
+    assert run["config"]["configurable"]["workspace_dir"] == workspace.key
+    assert run["assistant_id"] == workspace_assistant_id(
+        schedule.AUTOSKILL_GRAPH_ID, workspace
+    )
 
 
 def test_registered_graphs_refuse_other_workspace(served, factory_env):
@@ -736,6 +739,22 @@ def test_merge_runs_config_replaces_caller_folders():
         "workspace_dir": "/ws",
         "thread_id": "t1",
     }
+
+
+def test_merge_runs_config_runs_graph_on_workspace_assistant():
+    """A run named by its graph goes to that graph's assistant for the
+    launching graph's workspace; an assistant ID is left as it is."""
+    from EvoScientist.llm.patches import _merge_runs_config_kwargs
+
+    folders = {"workspace_dir": "/ws"}
+    with patch("EvoScientist.llm.patches._read_cfg_configurable", lambda: {}):
+        named = _merge_runs_config_kwargs({"assistant_id": "writing-agent"}, folders)
+        kept = _merge_runs_config_kwargs({"assistant_id": "custom-id"}, folders)
+        unscoped = _merge_runs_config_kwargs({"assistant_id": "writing-agent"})
+
+    assert named["assistant_id"] == workspace_assistant_id("writing-agent", "/ws")
+    assert kept["assistant_id"] == "custom-id"
+    assert unscoped["assistant_id"] == "writing-agent"
 
 
 def test_server_gateway_run_config_forwards_target_folders(monkeypatch):

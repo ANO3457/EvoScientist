@@ -241,12 +241,26 @@ async def test_schedule_command_scoped_to_workspace(workspace, client, monkeypat
 # ---------------------------------------------------------------------------
 
 
-def _autoskill_cron(cron_id: str, workspace_dir: str, *, forwarded: bool) -> dict:
-    from EvoScientist.memory.autoskills.schedule import AUTOSKILL_RUN_KIND
+def _autoskill_cron(
+    cron_id: str,
+    workspace_dir: str,
+    *,
+    forwarded: bool,
+    assistant_id: str | None = None,
+) -> dict:
+    """An AutoSkills cron as the server returns it; by default on its
+    workspace's assistant."""
+    from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
+    from EvoScientist.memory.autoskills.schedule import (
+        AUTOSKILL_GRAPH_ID,
+        AUTOSKILL_RUN_KIND,
+    )
 
     payload = {"config": {"configurable": {"workspace_dir": workspace_dir}}}
     return {
         "cron_id": cron_id,
+        "assistant_id": assistant_id
+        or workspace_assistant_id(AUTOSKILL_GRAPH_ID, Workspace(workspace_dir)),
         "schedule": "0 3 * * *",
         "enabled": True,
         "metadata": {
@@ -293,6 +307,82 @@ def test_reconcile_autoskills_ignores_other_workspaces(
 
     assert result["status"] == "unchanged"
     fake.crons.delete.assert_not_called()
+
+
+SYSTEM_ID = "1f1e4f53-0b5e-5c8b-9a43-0e0f8c3f6a11"
+
+
+def test_reconcile_autoskills_replaces_cron_on_graph_assistant(workspace, autoskills):
+    """A cron from before workspace assistants is recreated on the workspace's."""
+    from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
+    from EvoScientist.memory.autoskills.schedule import AUTOSKILL_GRAPH_ID
+
+    schedule, fake, config = autoskills
+    fake.crons.search.return_value = [
+        # The server stores the graph's own assistant by its ID.
+        _autoskill_cron("old", workspace.key, forwarded=True, assistant_id=SYSTEM_ID)
+    ]
+
+    result = schedule.reconcile_autoskill_schedule(config, workspace_dir=workspace.root)
+
+    assert result["status"] == "created"
+    fake.crons.delete.assert_called_once_with("old")
+    assert fake.crons.create.call_args.kwargs["assistant_id"] == (
+        workspace_assistant_id(AUTOSKILL_GRAPH_ID, workspace)
+    )
+
+
+def test_reconcile_autoskills_keeps_old_cron_when_create_fails(workspace, autoskills):
+    schedule, fake, config = autoskills
+    fake.crons.search.return_value = [
+        _autoskill_cron("old", workspace.key, forwarded=False)
+    ]
+    fake.crons.create.side_effect = RuntimeError("assistant not found")
+
+    with pytest.raises(RuntimeError, match="assistant not found"):
+        schedule.reconcile_autoskill_schedule(config, workspace_dir=workspace.root)
+
+    fake.crons.delete.assert_not_called()
+
+
+def test_reconcile_autoskills_converges_after_failed_delete(workspace, autoskills):
+    """A failed delete is reported; the next reconcile keeps the new cron and
+    removes the old one."""
+    schedule, fake, config = autoskills
+    fake.crons.search.return_value = [
+        _autoskill_cron("old", workspace.key, forwarded=False)
+    ]
+    fake.crons.delete.side_effect = RuntimeError("server busy")
+
+    with pytest.raises(RuntimeError, match="server busy"):
+        schedule.reconcile_autoskill_schedule(config, workspace_dir=workspace.root)
+    fake.crons.create.assert_called_once()
+
+    fake.crons.delete.reset_mock(side_effect=True)
+    fake.crons.create.reset_mock()
+    fake.crons.search.return_value = [
+        _autoskill_cron("old", workspace.key, forwarded=False),
+        _autoskill_cron("new", workspace.key, forwarded=True),
+    ]
+    again = schedule.reconcile_autoskill_schedule(config, workspace_dir=workspace.root)
+
+    assert again == {"status": "unchanged", "cron_id": "new"}
+    fake.crons.create.assert_not_called()
+    fake.crons.delete.assert_called_once_with("old")
+
+
+def test_reconcile_autoskills_keeps_one_of_duplicate_crons(workspace, autoskills):
+    schedule, fake, config = autoskills
+    fake.crons.search.return_value = [
+        _autoskill_cron("first", workspace.key, forwarded=True),
+        _autoskill_cron("second", workspace.key, forwarded=True),
+    ]
+
+    result = schedule.reconcile_autoskill_schedule(config, workspace_dir=workspace.root)
+
+    assert result == {"status": "unchanged", "cron_id": "first"}
+    fake.crons.create.assert_not_called()
+    fake.crons.delete.assert_called_once_with("second")
 
 
 def test_reconcile_autoskills_replaces_unforwarded_cron(workspace, other, autoskills):

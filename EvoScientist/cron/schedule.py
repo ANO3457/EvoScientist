@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from langgraph_sdk.schema import Cron, Run
 
+from ..langgraph_dev.assistants import launch_assistant_id
 from ..langgraph_dev.sdk import (
     configured_langgraph_dev_url,
     default_scheduler_timezone,
@@ -196,7 +197,7 @@ def create_cron(
     client: Any,
     *,
     workspace: Workspace,
-    assistant_id: str,
+    graph_id: str,
     schedule: str,
     input: dict[str, Any],
     metadata: dict[str, str],
@@ -205,7 +206,8 @@ def create_cron(
     multitask_strategy: str | None = None,
     durability: str | None = None,
 ) -> Cron:
-    """Create a cron of *workspace*: tagged with it, and its runs work in it.
+    """Create a cron of *workspace* on its *graph_id* assistant: tagged with
+    it, and its runs work in it.
 
     Without *thread_id* every run gets a fresh thread, which the runtime
     deletes after the run. With it the cron is bound to that existing thread,
@@ -224,6 +226,7 @@ def create_cron(
         kwargs["multitask_strategy"] = multitask_strategy
     if durability is not None:
         kwargs["durability"] = durability
+    assistant_id = launch_assistant_id(graph_id, workspace)
     if thread_id is not None:
         return client.crons.create_for_thread(thread_id, assistant_id, **kwargs)
     return client.crons.create(assistant_id=assistant_id, **kwargs)
@@ -258,7 +261,7 @@ def create_schedule(
     return create_cron(
         _client(),
         workspace=workspace,
-        assistant_id=SCHEDULER_GRAPH_ID,
+        graph_id=SCHEDULER_GRAPH_ID,
         schedule=schedule,
         input=_scheduled_input(prompt, rubric),
         metadata=_scheduled_metadata(name=name, prompt=prompt, rubric=rubric),
@@ -271,8 +274,8 @@ def list_schedules(*, workspace: Workspace) -> list[Cron]:
 
     Filtered server-side by ``run_kind`` metadata (the cron backend matches by
     metadata containment), so other kinds of crons are never read. We filter
-    on metadata rather than ``assistant_id`` because the stored ``assistant_id``
-    is a resolved UUID, not the ``scheduler`` graph name we create with. The
+    on metadata rather than ``assistant_id`` because crons created before
+    workspace assistants run on the graph's own assistant. The
     workspace is filtered here rather than in the search, which matches values
     exactly: see :func:`belongs_to`.
     """
@@ -304,7 +307,7 @@ def run_now(prompt: str, *, workspace: Workspace, rubric: str | None = None) -> 
     )
     return client.runs.create(
         thread_id=str(thread["thread_id"]),
-        assistant_id=SCHEDULER_GRAPH_ID,
+        assistant_id=launch_assistant_id(SCHEDULER_GRAPH_ID, workspace),
         input=_scheduled_input(prompt, rubric),
         metadata={
             **_scheduled_metadata(name="manual-run", prompt=prompt, rubric=rubric),

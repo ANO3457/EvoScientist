@@ -52,6 +52,15 @@ def workspace_assistant_id(graph_id: str, workspace: Workspace | str) -> str:
     )
 
 
+def launch_assistant_id(graph_id: str, workspace: Workspace | str | None) -> str:
+    """The assistant a run named *graph_id* is launched on for *workspace*:
+    the graph's workspace assistant; *graph_id* itself without a workspace,
+    or when it names no served graph (an assistant ID, say)."""
+    if workspace and graph_id in _SERVED_GRAPH_IDS:
+        return workspace_assistant_id(graph_id, workspace)
+    return graph_id
+
+
 def folder_name(key: str) -> str:
     """The last segment of a folder key, for labels; the key when it has none."""
     parts = [part for part in re.split(r"[\\/]", key) if part]
