@@ -98,6 +98,26 @@ def _fresh_process_workspace():
 
 
 @pytest.fixture
+def tiny_graph():
+    """A function returning a new small compiled graph, as graph builders do."""
+
+    def build(*_args, **_kwargs):
+        from typing import TypedDict
+
+        from langgraph.graph import StateGraph
+
+        class State(TypedDict):
+            x: int
+
+        builder = StateGraph(State)
+        builder.add_node("n", lambda state: state)
+        builder.set_entry_point("n")
+        return builder.compile()
+
+    return build
+
+
+@pytest.fixture
 def no_mcp(monkeypatch):
     """For tests that build the real agent: it would load the user's MCP servers,
     which cannot start inside a running loop. Opt in with ``usefixtures``."""

@@ -8,7 +8,6 @@ had before.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import sqlite3
 import sys
@@ -269,21 +268,20 @@ def test_owned_server_restarts_for_another_run_folder(
 
 
 def test_server_graphs_work_in_the_run_folder_and_crons_in_the_root(
-    run_dirs, monkeypatch
+    run_dirs, monkeypatch, tiny_graph
 ):
     """Deployed sub-agents work where the session works; scheduled tasks
     belong to the workspace and work in its root."""
-    import EvoScientist.memory.agents as memory_agents
     import EvoScientist.subagents._factory as factory
     import EvoScientist.subagents.expert_container_async as expert_async
-    from EvoScientist.paths import process_session_dirs, process_workspace
+    from EvoScientist.langgraph_dev.factories import GraphCache
 
     built: dict[str, dict] = {}
 
     def _record(name):
         def _build(*args, **kwargs):
             built[args[0] if args and isinstance(args[0], str) else name] = kwargs
-            return object()
+            return tiny_graph()
 
         return _build
 
@@ -291,23 +289,9 @@ def test_server_graphs_work_in_the_run_folder_and_crons_in_the_root(
     monkeypatch.setattr(
         expert_async, "build_expert_container_async_graph", _record("expert")
     )
-    for name in (
-        "build_memory_worker_graph",
-        "build_observation_linker_graph",
-        "build_autoskills_graph",
-    ):
-        monkeypatch.setattr(memory_agents, name, lambda *a, **k: object())
-    monkeypatch.setenv("EVOSCIENTIST_WORKSPACE_DIR", str(run_dirs.workspace.root))
-    monkeypatch.setenv("EVOSCIENTIST_RUN_DIR", str(run_dirs.run_dir))
-    process_workspace.cache_clear()
-    process_session_dirs.cache_clear()
-    monkeypatch.delitem(sys.modules, "EvoScientist.langgraph_dev.graphs", raising=False)
-
-    try:
-        importlib.import_module("EvoScientist.langgraph_dev.graphs")
-    finally:
-        # Built for this test's folders: later imports must build their own.
-        sys.modules.pop("EvoScientist.langgraph_dev.graphs", None)
+    graphs = GraphCache()
+    for graph_id in ("writing-agent", "expert-container-async", "scheduler"):
+        graphs.get(graph_id, run_dirs)
 
     assert built["writing-agent"]["work_dir"] == run_dirs.run_dir
     assert built["expert"]["work_dir"] == run_dirs.run_dir

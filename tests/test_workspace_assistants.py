@@ -130,22 +130,22 @@ async def test_ensure_workspace_assistants_repairs_other_fields(
     assert repaired["name"] == f"EvoScientist · {tmp_path.name}"
 
 
-def test_server_start_ensures_the_served_workspace_assistants(monkeypatch, tmp_path):
+def test_server_start_sets_the_served_workspace_up(monkeypatch, tmp_path):
     from starlette.testclient import TestClient
 
-    from EvoScientist.langgraph_dev import assistants
+    from EvoScientist.langgraph_dev import workspace_setup
     from EvoScientist.langgraph_dev.http import app
 
-    ensured = []
+    set_up = []
 
-    async def record(workspace):
-        ensured.append(workspace)
+    async def record(dirs):
+        set_up.append(dirs)
 
     monkeypatch.setenv("EVOSCIENTIST_WORKSPACE_DIR", str(tmp_path))
-    monkeypatch.setattr(assistants, "ensure_workspace_assistants", record)
+    monkeypatch.setattr(workspace_setup, "set_up_workspace", record)
     with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)):
         pass
-    assert ensured == [Workspace(tmp_path)]
+    assert [d.workspace for d in set_up] == [Workspace(tmp_path)]
 
 
 def test_server_start_fails_when_the_assistants_cannot_be_created(

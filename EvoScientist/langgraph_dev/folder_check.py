@@ -2,22 +2,17 @@
 
 Until the server serves several workspaces, it is pinned to one workspace and,
 for a ``--mode=run`` session, one run folder. Child runs forward the folders
-they belong to in ``configurable``; each registered graph is wrapped in a
-factory that compares them with the server's before the run executes, so a
-run meant for another folder fails instead of working in this one.
+they belong to in ``configurable``; each graph's factory (``factories``)
+compares them with the server's before the run executes, so a run meant for
+another folder fails instead of working in this one.
 """
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from langgraph_sdk.runtime import ServerRuntime
-
 from ..paths import SessionDirs, Workspace, process_session_dirs
-from ..sessions import FOLDER_GRAPH_IDS
 
 
 class RunFolderMismatchError(RuntimeError):
@@ -73,25 +68,3 @@ def check_run_folders(config: dict[str, Any], *, works_in_folder: bool) -> None:
         f"moved it, or moving it failed). Restart that session; if another "
         f"session holds the server, stop that one first."
     )
-
-
-def folder_checked(graph: Any, *, graph_id: str) -> Callable[..., Awaitable[Any]]:
-    """Register *graph* as *graph_id* behind a factory that checks each run's folders.
-
-    langgraph-api calls the factory for every access; only runs are checked
-    (``runtime.execution_runtime`` is set), and the prebuilt graph is returned.
-    Graphs outside ``FOLDER_GRAPH_IDS`` are built for the workspace root only
-    (scheduled tasks, memory and AutoSkills workers) and check the workspace
-    only.
-    """
-    works_in_folder = graph_id in FOLDER_GRAPH_IDS
-
-    async def factory(config: dict[str, Any], runtime: ServerRuntime) -> Any:
-        if runtime.execution_runtime is not None:
-            await asyncio.to_thread(
-                check_run_folders, config, works_in_folder=works_in_folder
-            )
-        return graph
-
-    factory.graph = graph  # type: ignore[attr-defined]
-    return factory

@@ -37,7 +37,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from EvoScientist.config import get_effective_config
-from EvoScientist.langgraph_dev import assistants
+from EvoScientist.langgraph_dev import workspace_setup
 from EvoScientist.langgraph_dev.boundary import BOUNDARY_ENV, BrowserBoundary, Trust
 from EvoScientist.llm.models import list_model_picker_entries
 from EvoScientist.local_secret import load_local_secret, require_local_secret
@@ -258,19 +258,12 @@ async def _lifespan(_app: Starlette):
     # langgraph-api runs this inside its own lifespan, after it loaded the
     # graphs and before it serves requests; the file I/O goes to a thread
     # because blockbuster refuses it on the event loop.
-    from EvoScientist.paths import process_workspace
+    from EvoScientist.paths import process_session_dirs
 
     await asyncio.to_thread(load_local_secret)
-    # Clients run on the served workspace's assistants; a store lost since the
-    # last start loses them too. Without them most runs fail, so the server
-    # does not start.
-    workspace = await asyncio.to_thread(process_workspace)
-    try:
-        await assistants.ensure_workspace_assistants(workspace)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Could not create the workspace assistants for {workspace.root}: {exc}"
-        ) from exc
+    await workspace_setup.set_up_workspace(
+        await asyncio.to_thread(process_session_dirs)
+    )
     yield
 
 

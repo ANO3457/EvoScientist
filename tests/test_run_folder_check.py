@@ -8,10 +8,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from EvoScientist.langgraph_dev import factories
+from EvoScientist.langgraph_dev.factories import served_graph
 from EvoScientist.langgraph_dev.folder_check import (
     RunFolderMismatchError,
     check_run_folders,
-    folder_checked,
 )
 from EvoScientist.paths import SessionDirs, Workspace
 from EvoScientist.sessions import FOLDER_GRAPH_IDS
@@ -91,14 +92,14 @@ def test_check_run_folders_refuses_run_dir_outside_workspace(served, tmp_path):
         )
 
 
-def test_folder_checked_factory_matches_server_signature():
+def test_served_graph_factory_matches_server_signature():
     """langgraph-api classifies the factory by its ``runtime`` annotation."""
     import inspect
     import typing
 
     from langgraph_sdk.runtime import ServerRuntime
 
-    factory = folder_checked(object(), graph_id="writing-agent")
+    factory = served_graph("writing-agent")
     assert list(inspect.signature(factory).parameters) == ["config", "runtime"]
     assert typing.get_type_hints(factory)["runtime"] is ServerRuntime
 
@@ -113,9 +114,23 @@ def test_only_graphs_working_in_a_folder_check_the_run_folder(served):
     check_run_folders(_config(SessionDirs(served.workspace)), works_in_folder=False)
 
 
-def test_factory_checks_runs_only_and_returns_the_prebuilt_graph(served, tmp_path):
+class _Built:
+    """A graph cache that returns one graph for every key."""
+
+    def __init__(self, graph):
+        self.graph = graph
+
+    def get(self, _graph_id, _dirs):
+        return self.graph
+
+
+def test_factory_checks_runs_only_and_returns_the_built_graph(
+    served, tmp_path, monkeypatch
+):
     graph = object()
-    factory = folder_checked(graph, graph_id="writing-agent")
+    monkeypatch.setattr(factories, "GRAPHS", _Built(graph))
+    monkeypatch.setattr(factories, "process_session_dirs", lambda: served)
+    factory = served_graph("writing-agent")
     mismatch = _config(SessionDirs(Workspace(tmp_path / "other")))
 
     reading = SimpleNamespace(execution_runtime=None)
@@ -230,31 +245,12 @@ def test_registered_graphs_check_the_folders_they_work_in(served, monkeypatch):
     workspace root only check the workspace."""
     import importlib
     import json
-    import sys
     from pathlib import Path
 
-    import EvoScientist.EvoScientist as evo
-    import EvoScientist.memory.agents as memory_agents
-    import EvoScientist.subagents._factory as factory_mod
-    import EvoScientist.subagents.expert_container_async as expert_async
-
-    for module, name in (
-        (factory_mod, "build_async_subagent_graph"),
-        (expert_async, "build_expert_container_async_graph"),
-        (memory_agents, "build_memory_worker_graph"),
-        (memory_agents, "build_observation_linker_graph"),
-        (memory_agents, "build_autoskills_graph"),
-    ):
-        monkeypatch.setattr(module, name, lambda *a, **k: object())
-    monkeypatch.setattr(evo, "_get_default_agent", lambda: MagicMock())
-    for name in (
-        "EvoScientist.langgraph_dev.graphs",
-        "EvoScientist.langgraph_dev.main_graph",
-    ):
-        monkeypatch.delitem(sys.modules, name, raising=False)
-
+    monkeypatch.setattr(factories, "GRAPHS", _Built(object()))
+    monkeypatch.setattr(factories, "process_session_dirs", lambda: served)
     registry = json.loads(
-        (Path(evo.__file__).parent / "langgraph_dev" / "langgraph.json").read_text()
+        (Path(factories.__file__).parent / "langgraph.json").read_text()
     )["graphs"]
     other_run = _config(
         SessionDirs(served.workspace, served.workspace.runs_dir / "other")
