@@ -132,8 +132,8 @@ def _forwarded_run_dir(configurable: dict[str, Any], project: Workspace) -> Path
 
 
 def _check_served(workspace: Workspace, registry: Registry) -> None:
-    missing = not workspace.root.is_dir()
-    if missing or not registry.is_registered(workspace.key):
+    if not is_served(workspace, registry):
+        missing = not workspace.root.is_dir()
         raise ProjectNotServedError(workspace, missing_folder=missing)
 
 
@@ -160,13 +160,17 @@ def _project_of(
     return bound.workspace if bound is not None else None
 
 
+def is_served(workspace: Workspace, registry: Registry) -> bool:
+    """Registered, and its folder exists: what this server serves."""
+    return registry.is_registered(workspace.key) and workspace.root.is_dir()
+
+
 def _read_folders(configurable: dict[str, Any], registry: Registry) -> SessionDirs:
     """Where a read works: the served project its config names (a thread's
     stored config, an assistant's), else the neutral graph."""
     workspace = read_workspace_or_none(configurable.get("workspace_dir"))
-    if workspace is not None and workspace.root.is_dir():
-        if registry.is_registered(workspace.key):
-            return SessionDirs(workspace)
+    if workspace is not None and is_served(workspace, registry):
+        return SessionDirs(workspace)
     return neutral_dirs()
 
 

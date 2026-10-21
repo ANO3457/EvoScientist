@@ -164,10 +164,7 @@ async def test_server_start_sets_registered_projects_up(
     for key in (other.key, gone.key):
         projects.set_registered(key, True)
 
-    # A run-mode start: reads still use the project root's chat graph.
-    await workspace_setup.set_up_workspace(
-        SessionDirs(workspace, workspace.runs_dir / "a")
-    )
+    await workspace_setup.set_up_at_start(workspace)
 
     assert setup_calls == [
         ("assistants", other.key),
@@ -175,6 +172,19 @@ async def test_server_start_sets_registered_projects_up(
         ("warm up", workspace.key),
     ]
     assert set(projects.registered()) == {other.key, gone.key, workspace.key}
+
+
+async def test_server_start_without_launcher_sets_registered_projects_up(
+    projects, setup_calls, tmp_path
+):
+    """A server started without a project (not by an EvoScientist client)."""
+    other = Workspace(tmp_path / "other")
+    other.root.mkdir()
+    projects.set_registered(other.key, True)
+
+    await workspace_setup.set_up_at_start(None)
+
+    assert setup_calls == [("assistants", other.key)]
 
 
 async def test_warm_up_builds_chat_graph_in_background(monkeypatch, workspace):

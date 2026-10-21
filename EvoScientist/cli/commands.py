@@ -2212,8 +2212,8 @@ def serve(
 
     gateway_backend = resolve_gateway_backend(config, GatewaySurface.SERVE)
 
-    # Auto-start langgraph dev (after workspace resolution, so deployed
-    # async sub-agents inherit the CLI's workspace via EVOSCIENTIST_WORKSPACE_DIR).
+    # Auto-start langgraph dev (after workspace resolution, so the server
+    # registers the CLI's workspace as it starts).
     _ensure_async_subagent_server(config, dirs=dirs, backend=gateway_backend)
 
     if config.dangerous_mode:
@@ -3275,8 +3275,8 @@ def _main_callback(
         _gateway_surface = GatewaySurface.INTERACTIVE
     gateway_backend = resolve_gateway_backend(config, _gateway_surface)
 
-    # Auto-start langgraph dev (after workspace resolution, so deployed
-    # async sub-agents inherit the CLI's workspace via EVOSCIENTIST_WORKSPACE_DIR).
+    # Auto-start langgraph dev (after workspace resolution, so the server
+    # registers the CLI's workspace as it starts).
     # A one-shot resume starts it for the thread's own folders instead, unless
     # the server gateway backend needs a running server to be built.
     prespawn = not (prompt and thread_id) or gateway_backend == "langgraph_server"

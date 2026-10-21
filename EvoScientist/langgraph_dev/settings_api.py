@@ -111,16 +111,13 @@ def _reaches_server(name: str) -> bool:
     """Whether the server reads ``name`` when it builds its graphs.
 
     The launcher's drift fingerprint keeps the list of fields that never
-    reach the server; ``default_workdir`` is on it, but the server serves
-    the workspace it was started with, so a change needs a restart too.
+    reach the server.
     """
     from EvoScientist.langgraph_dev.manager import (
         _FINGERPRINT_EXCLUDED_FIELDS,
         _FINGERPRINT_EXCLUDED_PREFIXES,
     )
 
-    if name == "default_workdir":
-        return True
     return not (
         name in _FINGERPRINT_EXCLUDED_FIELDS
         or name.startswith(_FINGERPRINT_EXCLUDED_PREFIXES)

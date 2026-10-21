@@ -210,20 +210,41 @@ def start_workspace_path(
 def process_workspace() -> Workspace:
     """The workspace of a process that was not given one explicitly.
 
-    ``EVOSCIENTIST_WORKSPACE_DIR`` when set (the langgraph dev manager sets it
-    for the server subprocess), otherwise the current directory. Read once per
-    process, so every graph the server builds and every route it answers agree
-    on the workspace even if the environment changes later (a ``.env`` merge).
+    ``EVOSCIENTIST_WORKSPACE_DIR`` when set, otherwise the current directory.
+    Read once per process, so it does not change with the environment later
+    (a ``.env`` merge). The langgraph dev server has no workspace of its own:
+    it serves every registered project (see :func:`launcher_workspace`).
     """
     return Workspace(_env_path("EVOSCIENTIST_WORKSPACE_DIR") or Path.cwd())
 
 
+# Names the project of the client that started the langgraph dev server.
+LAUNCHER_WORKSPACE_ENV = "EVOSCIENTIST_LAUNCHER_WORKSPACE"
+
+
+@functools.cache
+def launcher_workspace() -> Workspace | None:
+    """In the langgraph dev server: the project of the client that started it
+    (``LAUNCHER_WORKSPACE_ENV``), or ``None`` when it was started without one.
+
+    The server serves every registered project and works in the server home;
+    this is only the project ``GET /api/workspace`` reports and the server
+    registers as it starts. Read once per process.
+    """
+    path = _env_path(LAUNCHER_WORKSPACE_ENV)
+    if path is None:
+        return None
+    try:
+        return Workspace(path)
+    except PATH_ERRORS:
+        logger.warning("Cannot read the launcher's project %s.", path, exc_info=True)
+        return None
+
+
 @functools.cache
 def process_session_dirs() -> SessionDirs:
-    """:func:`process_workspace` plus the run folder the process works in.
-
-    The langgraph dev manager sets ``EVOSCIENTIST_RUN_DIR`` when it starts the
-    server for a ``--mode=run`` session. Read once per process, like the
+    """:func:`process_workspace` plus the run folder the process works in
+    (``EVOSCIENTIST_RUN_DIR`` when set). Read once per process, like the
     workspace.
     """
     return SessionDirs(process_workspace(), _env_path("EVOSCIENTIST_RUN_DIR"))
@@ -298,12 +319,17 @@ def dir_env(env: dict[str, str]) -> dict[str, str]:
     ``XDG_CONFIG_HOME`` is passed only if this process started with it: unset
     gives the same folder, and other programs the child runs (the agent's
     shell, MCP servers) may treat a set value differently from an unset one.
+    A memories folder override is passed as the absolute folder this process
+    uses, since the child works in another folder.
     """
     env = {**env, "EVOSCIENTIST_DATA_DIR": str(DATA_DIR)}
     if _XDG_CONFIG_HOME_SET:
         env["XDG_CONFIG_HOME"] = str(CONFIG_DIR.parent)
     else:
         env.pop("XDG_CONFIG_HOME", None)
+    if MEMORIES_DIR != GLOBAL_MEMORIES_DIR:
+        env["EVOSCIENTIST_MEMORIES_DIR"] = os.path.abspath(MEMORIES_DIR)
+        env.pop("EVOSCIENTIST_MEMORY_DIR", None)
     return env
 
 

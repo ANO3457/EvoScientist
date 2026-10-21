@@ -51,7 +51,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Overwrite
 
 from .message_meta import is_pinned_skill, is_rubric_feedback
-from .paths import SessionDirs, process_session_dirs
+from .paths import SessionDirs, launcher_workspace
 
 _logger = logging.getLogger(__name__)
 
@@ -1687,19 +1687,6 @@ async def db_stats(top_n: int = 5) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _api_session_dirs() -> SessionDirs:
-    """The workspace and run folder this langgraph dev server serves.
-
-    ``start_langgraph_dev`` sets ``EVOSCIENTIST_WORKSPACE_DIR`` (and
-    ``EVOSCIENTIST_RUN_DIR`` for a ``--mode=run`` session) on the subprocess.
-
-    NOTE: the first call resolves paths, a blocking syscall: never call it
-    directly from an async function on the dev runtime (blockbuster will flag
-    it).
-    """
-    return process_session_dirs()
-
-
 # Graphs the server builds for a thread's run folder (see
 # ``langgraph_dev.factories``). Every other graph works in the workspace root, so
 # only the workspace of its runs is checked.
@@ -1905,11 +1892,12 @@ def _stored_session_dirs(
 
 def _known_workspace_keys() -> set[str]:
     """The projects whose threads the server restores: every project the
-    registry knows, registered or not, and the folder the server was started
-    in. Blocking."""
+    registry knows, registered or not, and the project of the client that
+    started the server. Blocking."""
     from .langgraph_dev.registry import REGISTRY
 
-    return REGISTRY.known() | {_api_session_dirs().workspace.key}
+    launcher = launcher_workspace()
+    return REGISTRY.known() | ({launcher.key} if launcher is not None else set())
 
 
 async def restore_workspace_threads(workspace_key: str) -> bool:

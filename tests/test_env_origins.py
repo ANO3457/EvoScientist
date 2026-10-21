@@ -187,7 +187,7 @@ class TestSources:
 
 
 class TestServerRecord:
-    """What start_langgraph_dev records for the workspace, port and host."""
+    """What start_langgraph_dev records for the port and host."""
 
     def test_a_dotenv_port_keeps_its_source(self, tmp_path, monkeypatch):
         from EvoScientist.langgraph_dev.manager import _server_env_origins
@@ -196,27 +196,28 @@ class TestServerRecord:
         dotenv.write_text("EVOSCIENTIST_LANGGRAPH_DEV_PORT=6297\n", encoding="utf-8")
         monkeypatch.setattr(settings, "find_dotenv", lambda *a, **k: str(dotenv))
         get_effective_config()
-        origins = _server_env_origins(str(tmp_path), "6297", "127.0.0.1")
+        origins = _server_env_origins("6297", "127.0.0.1")
         assert origins["EVOSCIENTIST_LANGGRAPH_DEV_PORT"] == {
             "source": "dotenv",
             "path": str(dotenv),
         }
 
-    def test_a_symlinked_workdir_reads_file(self, config_file, tmp_path):
+    def test_a_dotenv_workdir_keeps_its_source(self, tmp_path, monkeypatch):
+        """The server inherits the user's ``EVOSCIENTIST_WORKSPACE_DIR`` as
+        is, so the settings API reports where it came from."""
         from EvoScientist.langgraph_dev.manager import _server_env_origins
 
-        real = tmp_path / "real"
-        real.mkdir()
-        link = tmp_path / "link"
-        try:
-            link.symlink_to(real, target_is_directory=True)
-        except OSError:
-            pytest.skip("symlinks are not available")
-        config_file.write_text(
-            json.dumps({"default_workdir": str(link)}), encoding="utf-8"
-        )
-        origins = _server_env_origins(str(real.resolve()), "6174", "127.0.0.1")
-        assert origins["EVOSCIENTIST_WORKSPACE_DIR"] == {"source": "file"}
+        dotenv = tmp_path / ".env"
+        dotenv.write_text(f"EVOSCIENTIST_WORKSPACE_DIR={tmp_path}\n", encoding="utf-8")
+        monkeypatch.setattr(settings, "find_dotenv", lambda *a, **k: str(dotenv))
+        get_effective_config()
+
+        origins = _server_env_origins("6174", "127.0.0.1")
+
+        assert origins["EVOSCIENTIST_WORKSPACE_DIR"] == {
+            "source": "dotenv",
+            "path": str(dotenv),
+        }
 
 
 def test_an_unreadable_config_file_does_not_stop_a_start(config_file):

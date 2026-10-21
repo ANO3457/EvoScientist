@@ -308,8 +308,6 @@ class TestPatch:
         [
             ({"tavily_api_key": "tvly-new-key-123"}, "tavily_api_key"),
             ({"langgraph_dev_port": 8124}, "langgraph_dev_port"),
-            # The root of the current drive: "/" has no drive on Windows.
-            ({"default_workdir": os.path.abspath(os.sep)}, "default_workdir"),
         ],
     )
     def test_server_fields_need_a_restart(self, server, secret, change, field):
@@ -318,6 +316,18 @@ class TestPatch:
         assert response.status_code == 200
         assert response.json()["restart_required"] is True
         assert field in response.json()["restart_fields"]
+
+    def test_default_workdir_needs_no_restart(self, server, secret):
+        """The server serves every registered project; only clients read it."""
+        with _no_checks():
+            response = server.patch(
+                "/api/settings",
+                # The root of the current drive: "/" has no drive on Windows.
+                json={"default_workdir": os.path.abspath(os.sep)},
+                headers=secret,
+            )
+        assert response.status_code == 200
+        assert response.json()["restart_required"] is False
 
     def test_pending_restart_survives_a_reload(self, server, secret):
         server.patch("/api/settings", json={"langgraph_dev_port": 8124}, headers=secret)

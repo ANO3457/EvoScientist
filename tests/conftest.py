@@ -284,14 +284,19 @@ def _no_health_server(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_process_workspace():
-    """``process_workspace()`` is read once per process; tests change env/cwd."""
-    from EvoScientist.paths import process_session_dirs, process_workspace
+    """``process_workspace()`` and ``launcher_workspace()`` are read once per
+    process; tests change env/cwd."""
+    from EvoScientist.paths import (
+        launcher_workspace,
+        process_session_dirs,
+        process_workspace,
+    )
 
-    process_workspace.cache_clear()
-    process_session_dirs.cache_clear()
+    for cached in (process_workspace, process_session_dirs, launcher_workspace):
+        cached.cache_clear()
     yield
-    process_workspace.cache_clear()
-    process_session_dirs.cache_clear()
+    for cached in (process_workspace, process_session_dirs, launcher_workspace):
+        cached.cache_clear()
 
 
 @pytest.fixture
@@ -432,10 +437,10 @@ def no_workspace_setup(monkeypatch):
     needs the runtime's store, which only ``runtime_store`` provides."""
     from EvoScientist.langgraph_dev import workspace_setup
 
-    async def skip(_dirs):
+    async def skip(_launcher):
         return None
 
-    monkeypatch.setattr(workspace_setup, "set_up_workspace", skip)
+    monkeypatch.setattr(workspace_setup, "set_up_at_start", skip)
 
 
 @pytest.fixture

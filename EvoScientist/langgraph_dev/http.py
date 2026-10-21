@@ -39,7 +39,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from EvoScientist.config import get_effective_config
-from EvoScientist.langgraph_dev import workspace_setup
+from EvoScientist.langgraph_dev import server_home, workspace_setup
 from EvoScientist.langgraph_dev.boundary import BOUNDARY_ENV, BrowserBoundary, Trust
 from EvoScientist.llm.models import list_model_picker_entries
 from EvoScientist.local_secret import load_local_secret, require_local_secret
@@ -92,7 +92,7 @@ async def get_models(_request: Request) -> JSONResponse:
     )
 
 
-async def get_teams(_request: Request) -> JSONResponse:
+async def get_teams(request: Request) -> JSONResponse:
     """Return installed expert skills as ``{teams: [...]}`` for the WebUI gallery.
 
     A "team" in the WebUI vocabulary is an installed expert skill — a skill
@@ -125,14 +125,28 @@ async def get_teams(_request: Request) -> JSONResponse:
 
     Response shape (each entry): ``{name, description, byline?,
     capability_tags?, avatar_hint?}`` — the WebUI gallery consumes these.
+
+    The ``workspace_dir`` query parameter names the project whose installs
+    count (``400`` when it is not a readable absolute path, ``404`` when that
+    project is not served); without it, the project ``GET /api/workspace``
+    reports, with the same ``503`` when there is none.
     """
-    from EvoScientist.paths import process_workspace
+    from EvoScientist.langgraph_dev.folder_check import read_workspace_or_none
     from EvoScientist.tools.skills_manager import list_expert_skills
 
-    def _list() -> list:
-        return list_expert_skills(True, workspace=process_workspace())
+    requested = request.query_params.get("workspace_dir")
+    if requested is None:
+        workspace = await asyncio.to_thread(_launcher_project)
+        if workspace is None:
+            return _no_project()
+    else:
+        workspace = await asyncio.to_thread(read_workspace_or_none, requested)
+        if workspace is None:
+            return JSONResponse({"error": "invalid_path"}, status_code=400)
+        if not await asyncio.to_thread(_served, workspace):
+            return JSONResponse({"error": "not_served"}, status_code=404)
 
-    experts = await asyncio.to_thread(_list)
+    experts = await asyncio.to_thread(list_expert_skills, True, workspace=workspace)
     teams = []
     for info in experts:
         entry = {
@@ -233,23 +247,56 @@ async def post_policy(request: Request) -> JSONResponse:
     return JSONResponse({"decisions": decisions})
 
 
+def _served(workspace: Workspace) -> bool:
+    from EvoScientist.langgraph_dev.folder_check import is_served
+    from EvoScientist.langgraph_dev.registry import REGISTRY
+
+    return is_served(workspace, REGISTRY)
+
+
+def _launcher_project() -> Workspace | None:
+    """The project of the client that started this server, when it is served.
+    Blocking."""
+    from EvoScientist.paths import launcher_workspace
+
+    launcher = launcher_workspace()
+    return launcher if launcher is not None and _served(launcher) else None
+
+
+def _no_project() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "no_workspace",
+            "detail": "No folder is selected: this server was started without "
+            "a project, or that project is not registered or its folder is "
+            "missing.",
+        },
+        status_code=503,
+    )
+
+
 async def get_workspace(_request: Request) -> JSONResponse:
-    """Return the folder this server serves as ``{workspace_dir, run_dir}``.
+    """Return the project of the client that started this server as
+    ``{workspace_dir, run_dir}``, while it is served.
 
     ``workspace_dir`` is the project root in the form thread and checkpoint
     metadata use (:attr:`~EvoScientist.paths.Workspace.key`), so a client
     can compare it with them and derive the folder's assistant IDs without
-    resolving paths itself. ``run_dir`` is the run folder of a ``--mode=run``
-    session that holds the server, else ``null``.
+    resolving paths itself; ``run_dir`` is always ``null``. ``503`` (not
+    ``404``, which a client takes for a server without this route) when
+    there is no such project, or it is not registered or its folder is
+    missing.
 
     Offloaded to a thread because resolving the folders touches the
     filesystem, which blockbuster refuses on the event loop.
     """
-    from EvoScientist.paths import process_session_dirs
+    from EvoScientist.paths import SessionDirs
 
-    dirs = await asyncio.to_thread(process_session_dirs)
+    workspace = await asyncio.to_thread(_launcher_project)
+    if workspace is None:
+        return _no_project()
     # The same serialisation as thread and checkpoint stamps.
-    return JSONResponse({"run_dir": None} | dirs.metadata())
+    return JSONResponse({"run_dir": None} | SessionDirs(workspace).metadata())
 
 
 def _registered_projects() -> list[dict[str, object]]:
@@ -414,12 +461,10 @@ async def _lifespan(_app: Starlette):
     # graphs and started its cron scheduler and run workers, and before it
     # serves requests; the file I/O goes to a thread because blockbuster
     # refuses it on the event loop.
-    from EvoScientist.paths import process_session_dirs
+    from EvoScientist.paths import launcher_workspace
 
     await asyncio.to_thread(load_local_secret)
-    await workspace_setup.set_up_workspace(
-        await asyncio.to_thread(process_session_dirs)
-    )
+    await workspace_setup.set_up_at_start(await asyncio.to_thread(launcher_workspace))
     yield
 
 
@@ -458,4 +503,10 @@ def _build_app() -> Starlette:
     return app
 
 
+# langgraph-api imports this app before its runtime loads the store, so the
+# server (the process working in the server home) takes its data folder's lock
+# and backs the store up first; anything else importing this module does not.
+if server_home.serves_from_home():
+    server_home.hold_server_lock()
+    server_home.back_up_store()
 app = _build_app()

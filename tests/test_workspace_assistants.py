@@ -104,40 +104,41 @@ async def test_ensure_workspace_assistants_repairs_other_fields(
     assert repaired["name"] == f"EvoScientist · {tmp_path.name}"
 
 
-def test_server_start_sets_the_served_workspace_up(monkeypatch, tmp_path):
+def test_server_start_sets_launcher_project_up(monkeypatch, tmp_path):
     from starlette.testclient import TestClient
 
+    from EvoScientist import paths
     from EvoScientist.langgraph_dev import workspace_setup
     from EvoScientist.langgraph_dev.http import app
 
     set_up = []
 
-    async def record(dirs):
-        set_up.append(dirs)
+    async def record(launcher):
+        set_up.append(launcher)
 
-    monkeypatch.setenv("EVOSCIENTIST_WORKSPACE_DIR", str(tmp_path))
-    monkeypatch.setattr(workspace_setup, "set_up_workspace", record)
+    monkeypatch.setenv(paths.LAUNCHER_WORKSPACE_ENV, str(tmp_path))
+    monkeypatch.setattr(workspace_setup, "set_up_at_start", record)
     with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)):
         pass
-    assert [d.workspace for d in set_up] == [Workspace(tmp_path)]
+    assert set_up == [Workspace(tmp_path)]
 
 
-def test_server_start_fails_when_the_assistants_cannot_be_created(
-    monkeypatch, tmp_path
-):
-    """Without them most runs would fail with a 404 that hides the cause."""
+def test_server_start_survives_launcher_setup_failure(monkeypatch, tmp_path, caplog):
+    """One project never stops a server that serves the others; the failure
+    is logged and the project stays unregistered."""
     from starlette.testclient import TestClient
 
-    from EvoScientist.langgraph_dev import assistants
+    from EvoScientist import paths
+    from EvoScientist.langgraph_dev import assistants, registry
     from EvoScientist.langgraph_dev.http import app
 
     async def fail(_workspace):
         raise ValueError("store unavailable")
 
-    monkeypatch.setenv("EVOSCIENTIST_WORKSPACE_DIR", str(tmp_path))
+    monkeypatch.setenv(paths.LAUNCHER_WORKSPACE_ENV, str(tmp_path))
     monkeypatch.setattr(assistants, "ensure_workspace_assistants", fail)
-    with pytest.raises(
-        RuntimeError, match=r"workspace assistants for .*store unavailable"
-    ):
-        with TestClient(app, base_url="http://127.0.0.1"):
-            pass
+    with TestClient(app, base_url="http://127.0.0.1"):
+        pass
+
+    assert "store unavailable" in caplog.text
+    assert not registry.REGISTRY.is_registered(Workspace(tmp_path).key)

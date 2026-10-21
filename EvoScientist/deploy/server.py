@@ -117,9 +117,10 @@ def deploy(
     from ..paths import start_workspace_path
 
     ws = str(start_workspace_path(workdir, config.default_workdir))
-    # Subprocess inherits this path via EVOSCIENTIST_WORKSPACE_DIR (set inside
-    # start_langgraph_dev). Ensure the dir exists; do NOT mutate the parent
-    # process's paths module state — the deploy parent has no in-process agent.
+    # The server registers this project as it starts (start_langgraph_dev
+    # names it in EVOSCIENTIST_LAUNCHER_WORKSPACE). Ensure the dir exists; do
+    # NOT mutate the parent process's paths module state — the deploy parent
+    # has no in-process agent.
     os.makedirs(ws, exist_ok=True)
 
     # 3. Resolve port, then validate range so misconfigurations fail fast
@@ -153,15 +154,13 @@ def deploy(
                     # Only when the recorded pid verifiably serves THIS port, so a
                     # stale or other-port record is never blamed.
                     console.print(
-                        f"[dim]It serves workspace {sidecar.get('workspace')} "
-                        f"(pid {sidecar.get('pid')}). Stop it with "
-                        f"[bold]EvoSci server stop[/bold], or use "
-                        f"[bold]--port[/bold] to deploy on a different port.[/dim]"
+                        f"[dim]It was started for workspace "
+                        f"{sidecar.get('workspace')} (pid {sidecar.get('pid')}). "
+                        f"Stop it with [bold]EvoSci server stop[/bold].[/dim]"
                     )
                 else:
                     console.print(
-                        "[dim]Stop the existing EvoSci/serve session first, or use "
-                        "[bold]--port[/bold] to deploy on a different port.[/dim]"
+                        "[dim]Stop the existing EvoSci/serve session first.[/dim]"
                     )
             else:
                 console.print(

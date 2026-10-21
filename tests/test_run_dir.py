@@ -171,9 +171,8 @@ def test_run_mode_memory_is_keyed_to_the_workspace_root(run_dirs, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_server_starts_in_the_root_with_the_run_folder_in_its_env(
-    run_dirs, monkeypatch, tmp_path, runtime_paths
-):
+def test_server_env_has_no_run_folder(run_dirs, monkeypatch, tmp_path, runtime_paths):
+    """A run names its run folder itself; the server has none of its own."""
     from tests.test_langgraph_dev_server_env import _patch_start_prereqs, _PopenAbort
 
     monkeypatch.setenv("EVOSCIENTIST_RUN_DIR", "/inherited")
@@ -184,19 +183,6 @@ def test_server_starts_in_the_root_with_the_run_folder_in_its_env(
             run_dir=run_dirs.run_dir,
             port=16190,
         )
-    assert captured["env"]["EVOSCIENTIST_WORKSPACE_DIR"] == str(run_dirs.workspace.root)
-    assert captured["env"]["EVOSCIENTIST_RUN_DIR"] == str(run_dirs.run_dir)
-
-
-def test_daemon_server_env_has_no_run_folder(
-    workspace, monkeypatch, tmp_path, runtime_paths
-):
-    from tests.test_langgraph_dev_server_env import _patch_start_prereqs, _PopenAbort
-
-    monkeypatch.setenv("EVOSCIENTIST_RUN_DIR", "/inherited")
-    captured = _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
-    with pytest.raises(_PopenAbort):
-        manager.start_langgraph_dev(workspace_dir=workspace.root, port=16191)
     assert "EVOSCIENTIST_RUN_DIR" not in captured["env"]
 
 
@@ -581,7 +567,7 @@ async def test_cli_and_server_upgrade_before_reading(
         "langgraph_runtime_inmem.database",
         SimpleNamespace(GLOBAL_STORE=store),
     )
-    monkeypatch.setattr(sessions, "_api_session_dirs", lambda: SessionDirs(workspace))
+    monkeypatch.setattr(sessions, "launcher_workspace", lambda: workspace)
     async with sessions.create_checkpointer_for_langgraph_api():
         pass
     (restored,) = store["threads"]

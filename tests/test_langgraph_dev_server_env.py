@@ -82,11 +82,37 @@ def test_start_sets_server_process_env(monkeypatch, tmp_path, runtime_paths, inh
     assert captured["env"]["EVOSCIENTIST_SERVER_PROCESS"] == "1"
 
 
-def test_start_sets_workspace_dir_env(monkeypatch, tmp_path, runtime_paths):
+def test_start_runs_server_in_server_home_for_launcher_project(
+    monkeypatch, tmp_path, runtime_paths
+):
+    """The server serves every registered project, so it gets no workspace of
+    its own, only the project of the client starting it, as an absolute path.
+    The user's ``EVOSCIENTIST_WORKSPACE_DIR`` (Docker sets it) passes as is."""
+    from EvoScientist import paths
+
+    monkeypatch.setenv("EVOSCIENTIST_WORKSPACE_DIR", "/inherited")
+    monkeypatch.chdir(tmp_path)
     captured = _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
     with pytest.raises(_PopenAbort):
+        manager.start_langgraph_dev(workspace_dir=Path("proj"), port=16178)
+
+    env = captured["env"]
+    assert env["EVOSCIENTIST_WORKSPACE_DIR"] == "/inherited"
+    assert env[paths.LAUNCHER_WORKSPACE_ENV] == str(tmp_path / "proj")
+    assert captured["cwd"] == str(paths.SERVER_HOME)
+    if os.name == "posix":
+        assert paths.SERVER_HOME.stat().st_mode & 0o777 == 0o700
+
+
+def test_start_refuses_when_another_server_holds_data_folder(
+    monkeypatch, tmp_path, runtime_paths
+):
+    from EvoScientist.langgraph_dev import server_home
+
+    _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+    monkeypatch.setattr(server_home, "server_running", lambda wait=0: True)
+    with pytest.raises(RuntimeError, match="already uses the data folder"):
         manager.start_langgraph_dev(workspace_dir=tmp_path, port=16178)
-    assert captured["env"].get("EVOSCIENTIST_WORKSPACE_DIR") == str(tmp_path)
 
 
 def test_start_sets_the_browser_boundary(monkeypatch, tmp_path, runtime_paths):

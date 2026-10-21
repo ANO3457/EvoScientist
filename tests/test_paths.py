@@ -517,3 +517,25 @@ class TestSharedDirFromEnv:
         if xdg_set:
             expected["XDG_CONFIG_HOME"] = str(tmp_path / "cfg")
         assert env == expected
+
+    def test_dir_env_gives_children_memories_override_as_absolute(
+        self, tmp_path, monkeypatch
+    ):
+        """The server works in the server home, so a relative override would
+        name another folder there."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(paths, "MEMORIES_DIR", Path("memories"))
+        env = paths.dir_env(
+            {"EVOSCIENTIST_MEMORIES_DIR": "memories", "EVOSCIENTIST_MEMORY_DIR": "old"}
+        )
+        assert env["EVOSCIENTIST_MEMORIES_DIR"] == str(tmp_path / "memories")
+        assert "EVOSCIENTIST_MEMORY_DIR" not in env
+
+    def test_launcher_workspace_unreadable_is_none(self, monkeypatch):
+        def unreadable(_path):
+            raise OSError("loop")
+
+        monkeypatch.setenv(paths.LAUNCHER_WORKSPACE_ENV, "/proj")
+        monkeypatch.setattr(paths, "Workspace", unreadable)
+        paths.launcher_workspace.cache_clear()
+        assert paths.launcher_workspace() is None

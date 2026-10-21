@@ -302,12 +302,11 @@ class EvoScientistConfig:
     # back to UTC if it can't be determined; set e.g. "Europe/London" to pin one.
     scheduler_default_timezone: str = ""
 
-    # Whether langgraph dev persists its runtime state to .langgraph_api/ next
-    # to the subprocess cwd. True (default) keeps async-task, scheduler, and
-    # Store API state across subprocess restarts — useful for future
-    # cross-session async, cron, and Store features. Set False to suppress
-    # writes (workspace stays cleaner; state is in-memory only and lost on
-    # CLI exit). EvoScientist's main thread persistence uses sessions.db
+    # Whether langgraph dev persists its runtime state to .langgraph_api/ in
+    # the server home (~/.evoscientist/server). True (default) keeps
+    # async-task, scheduler, and Store API state across subprocess restarts.
+    # Set False to suppress writes (state is in-memory only and lost when the
+    # server stops). EvoScientist's main thread persistence uses sessions.db
     # regardless of this setting.
     langgraph_dev_file_persistence: bool = True
 

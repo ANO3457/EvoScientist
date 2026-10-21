@@ -44,7 +44,7 @@ from EvoScientist.config.settings import (
     config_value_origin,
     env_origins,
 )
-from EvoScientist.langgraph_dev import boundary
+from EvoScientist.langgraph_dev import boundary, server_home
 
 if TYPE_CHECKING:
     from EvoScientist.deploy.backend_job import BackendJob
@@ -928,16 +928,15 @@ def _packaged_langgraph_config() -> Path:
 # =============================================================================
 
 
-def _server_env_origins(workspace: str, port: str, host: str) -> dict:
-    """This process's record of environment origins, plus the workspace, port
-    and host :func:`start_langgraph_dev` always sets for the server.
+def _server_env_origins(port: str, host: str) -> dict:
+    """This process's record of environment origins, plus the port and host
+    :func:`start_langgraph_dev` always sets for the server.
 
     A variable passed on unchanged keeps what is recorded for it: a ``.env``
     source with its path, or no record for the user's own export.
     """
     origins = env_origins()
     for env_key, field, value in (
-        ("EVOSCIENTIST_WORKSPACE_DIR", "default_workdir", workspace),
         ("EVOSCIENTIST_LANGGRAPH_DEV_PORT", "langgraph_dev_port", port),
         ("EVOSCIENTIST_LANGGRAPH_DEV_HOST", "langgraph_dev_host", host),
     ):
@@ -946,6 +945,19 @@ def _server_env_origins(workspace: str, port: str, host: str) -> dict:
             continue
         origins[env_key] = {"source": config_value_origin(field, value)}
     return origins
+
+
+def _refuse_running_server() -> None:
+    """Raise ``RuntimeError`` when another server uses this data folder, after
+    ``server_home.LOCK_WAIT`` for one stopped just before that is exiting."""
+    try:
+        running = server_home.server_running(wait=server_home.LOCK_WAIT)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not use the server folder {paths.SERVER_HOME}: {exc}"
+        ) from exc
+    if running:
+        raise server_home.ServerRunningError(server_home.running_server_message())
 
 
 def start_langgraph_dev(
@@ -963,23 +975,24 @@ def start_langgraph_dev(
 ) -> subprocess.Popen:
     """Start langgraph dev as a background subprocess.
 
+    The server works in the server home (``paths.SERVER_HOME``), which holds
+    its runtime store, and serves every registered project.
+
     Args:
-        workspace_dir: Working directory for the subprocess (subprocess ``cwd``).
-            Determines where deployed agents' filesystem operations land
-            (the server builds its graphs for ``paths.process_workspace()``,
-            which reads ``EVOSCIENTIST_WORKSPACE_DIR``). Defaults to
+        workspace_dir: The project of the client starting the server, passed
+            as ``paths.LAUNCHER_WORKSPACE_ENV``: the server registers it as it
+            starts and ``GET /api/workspace`` reports it. Defaults to
             ``Path.cwd()``.
-        run_dir: The run folder of a ``--mode=run`` session, passed to the
-            server as ``EVOSCIENTIST_RUN_DIR``. The server's sandbox works
-            there; skills, memory and crons stay with the workspace.
+        run_dir: The run folder of a ``--mode=run`` session, recorded for
+            this process; a run names its run folder itself.
         port: TCP port to bind. Defaults to 6174 (Kaprekar's constant).
         host: Network interface to bind. Defaults to loopback. SECURITY:
             widening this exposes an unauthenticated API whose agent can run
             shell commands — only pass ``0.0.0.0`` on trusted networks.
         file_persistence: When True (default), langgraph dev writes its full
-            ``.langgraph_api/`` cache so async-task / Store / scheduler state
-            survives subprocess restarts. Set False to suppress periodic
-            flushes (workspace stays cleaner; state is in-memory only).
+            ``.langgraph_api/`` cache in the server home so async-task / Store
+            / scheduler state survives subprocess restarts. Set False to
+            suppress periodic flushes (state is in-memory only).
         jobs_per_worker: Concurrent runs per worker (``--n-jobs-per-worker``).
         tunnel: When True, pass ``--tunnel`` so langgraph dev exposes the
             server over a public Cloudflare quick-tunnel. The random
@@ -995,7 +1008,8 @@ def start_langgraph_dev(
     Raises:
         FileNotFoundError: If the langgraph CLI or packaged ``langgraph.json``
             is missing.
-        RuntimeError: If langgraph dev exits early or never becomes healthy.
+        RuntimeError: If another server uses this data folder, or langgraph
+            dev exits early or never becomes healthy.
     """
     global _PROCESS
 
@@ -1074,6 +1088,9 @@ def start_langgraph_dev(
             f"holds it). Free the port with `lsof -ti:{port}`, "
             f"or change ports with: `EvoSci config set langgraph_dev_port <other-port>`"
         )
+    # One server per data folder: the server takes the lock itself, so a
+    # refusal here says why rather than "exited immediately".
+    _refuse_running_server()
 
     RUNTIME.pid_dir.mkdir(parents=True, exist_ok=True)
     # Rotate the log if it has grown past the threshold so this session's
@@ -1096,32 +1113,23 @@ def start_langgraph_dev(
     except OSError:
         _LOG_OFFSET_AT_START = 0
 
-    # Propagate workspace to the subprocess so deployed sub-agents build their
-    # graphs for the same dir as the CLI's main agent. cwd alone
-    # is fragile (relative paths in MCP configs etc.); env var is explicit.
-    #
-    # Note: ``EVOSCIENTIST_WORKSPACE_DIR`` serves a dual role in this codebase.
-    # config/settings.py:_ENV_MAPPINGS reads it as a user-facing override of
-    # ``default_workdir`` (parent process). Here we WRITE it on the subprocess
-    # env to propagate the resolved workspace into langgraph dev. Both
-    # purposes mean "this is the user's workspace", so they don't conflict;
-    # the explicit write below always wins for the subprocess regardless of
-    # what the parent had inherited from its own environment.
-    # The server runs in the workspace and loads its ``.env``; it gets this
-    # process's data and config folders so both use the same files.
+    # The server serves every registered project from the server home, so it
+    # gets no workspace of its own; it is told the launcher's project, as an
+    # absolute path since it works in another folder. A run names its run
+    # folder itself. ``EVOSCIENTIST_WORKSPACE_DIR`` passes as inherited: it is
+    # the user's ``default_workdir`` override (Docker sets it), which the
+    # settings API reports. It gets this process's data and config folders so
+    # both use the same files.
     sub_env = paths.dir_env(os.environ)
-    sub_env["EVOSCIENTIST_WORKSPACE_DIR"] = str(workspace_dir)
-    if run_dir is not None:
-        sub_env["EVOSCIENTIST_RUN_DIR"] = str(run_dir)
-    else:
-        sub_env.pop("EVOSCIENTIST_RUN_DIR", None)
+    sub_env.pop("EVOSCIENTIST_RUN_DIR", None)
+    sub_env[paths.LAUNCHER_WORKSPACE_ENV] = os.path.abspath(workspace_dir)
     sub_env["PYTHONIOENCODING"] = "utf-8"
     sub_env["PYTHONUTF8"] = "1"
 
     # By default, let langgraph dev write its full ``.langgraph_api/`` cache
-    # so future use cases — cross-session async tasks, Store API persistence,
+    # (in the server home) so future use cases — cross-session async tasks, Store API persistence,
     # cron job state across CLI restarts — work without further changes. Users
-    # who want a clean workspace can opt out via:
+    # who want no cache on disk can opt out via:
     #   EvoSci config set langgraph_dev_file_persistence false
     if not file_persistence:
         sub_env["LANGGRAPH_DISABLE_FILE_PERSISTENCE"] = "true"
@@ -1160,10 +1168,8 @@ def start_langgraph_dev(
     sub_env.pop("CORS_ALLOW_ORIGINS", None)
     sub_env.pop("TUNNEL_HTTP_HOST_HEADER", None)
     # Where the server's config-mapped variables came from, for the settings
-    # API's ``sources``: this process's record plus the three values set above.
-    sub_env[ENV_ORIGINS_VAR] = json.dumps(
-        _server_env_origins(str(workspace_dir), str(port), host)
-    )
+    # API's ``sources``: this process's record plus the two values set above.
+    sub_env[ENV_ORIGINS_VAR] = json.dumps(_server_env_origins(str(port), host))
 
     # POSIX: own session so the child can be group-signalled on cleanup.
     # Windows: own process group, so Ctrl+C in the terminal does not reach the
@@ -1183,6 +1189,13 @@ def start_langgraph_dev(
         )
 
     try:
+        server_folder = server_home.ensure_server_home()
+    except OSError as exc:
+        log_handle.close()
+        raise RuntimeError(
+            f"Could not create the server folder {paths.SERVER_HOME}: {exc}"
+        ) from exc
+    try:
         logger.info("Starting langgraph dev with CLI: %s", exe)
         proc = subprocess.Popen(
             [
@@ -1200,7 +1213,7 @@ def start_langgraph_dev(
                 "--no-reload",
                 *(["--tunnel"] if tunnel else []),
             ],
-            cwd=str(workspace_dir),
+            cwd=str(server_folder),
             stdout=log_handle,
             stderr=log_handle,
             env=sub_env,
@@ -1379,8 +1392,7 @@ def stop_langgraph_dev(proc: subprocess.Popen | None = None) -> None:
 
     # Note: ``.langgraph_api/`` is intentionally NOT removed — it holds
     # langgraph dev's persisted async-task / scheduler / Store state that
-    # may be useful across CLI restarts. Users who want a clean workspace
-    # can ``rm -rf .langgraph_api/`` manually or set
+    # may be useful across CLI restarts. It lives in the server home; set
     # ``langgraph_dev_file_persistence: false`` in config to suppress writes.
 
 

@@ -2427,8 +2427,8 @@ class TestRestoreWebuiThreadsToGlobalStore(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import patch
 
         return patch(
-            "EvoScientist.sessions._api_session_dirs",
-            return_value=SessionDirs(Workspace(self._WS)),
+            "EvoScientist.sessions.launcher_workspace",
+            return_value=Workspace(self._WS),
         )
 
     async def test_restore_scopes_threads_by_binding(self):
