@@ -1,12 +1,159 @@
 """Shared fixtures for EvoScientist tests."""
 
+import errno
+import ipaddress
 import logging
 import os
+import shutil
+import socket
+import sys
+import tempfile
+from asyncio.proactor_events import BaseProactorEventLoop
 from pathlib import Path
 
 import pytest
 
 _NONEXISTENT_DOTENV = str(Path(__file__).with_name(".pytest-dotenv-does-not-exist"))
+_test_home: Path | None = None
+
+
+def pytest_configure(config):
+    """Point the home folder at an empty one before EvoScientist is imported.
+
+    ``EvoScientist.paths`` resolves the data and config folders from it at
+    import, and the import itself migrates files there, so a fixture would
+    act too late. ``XDG_CONFIG_HOME`` and ``EVOSCIENTIST_DATA_DIR`` would
+    override it, so they go too.
+    """
+    global _test_home
+    if "EvoScientist" in sys.modules:
+        raise pytest.UsageError(
+            "EvoScientist was imported before tests/conftest.py could isolate "
+            "the home folder; import it inside fixtures or tests instead"
+        )
+    _test_home = Path(tempfile.mkdtemp(prefix="evosci-test-home-"))
+    os.environ["HOME"] = str(_test_home)
+    os.environ["USERPROFILE"] = str(_test_home)
+    for name in ("XDG_CONFIG_HOME", "EVOSCIENTIST_DATA_DIR"):
+        os.environ.pop(name, None)
+
+
+def pytest_unconfigure(config):
+    if _test_home is not None:
+        shutil.rmtree(_test_home, ignore_errors=True)
+
+
+_CLEARED_ENV_PREFIXES = ("EVOSCIENTIST_", "LANGCHAIN_", "LANGSMITH_")
+_CLEARED_ENV_SUFFIXES = ("_API_KEY", "_BASE_URL")
+_CLEARED_ENV_NAMES = frozenset(
+    {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}
+    | {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+)
+
+
+def _cleared_env_name(name: str) -> bool:
+    from EvoScientist.config.settings import _ENV_MAPPINGS
+
+    return (
+        name in _CLEARED_ENV_NAMES
+        or name in _ENV_MAPPINGS.values()
+        or name.upper().startswith(_CLEARED_ENV_PREFIXES)
+        or name.upper().endswith(_CLEARED_ENV_SUFFIXES)
+    )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Start every test without the developer's provider, EvoScientist,
+    tracing and proxy settings, and undo whatever it writes to the
+    environment. Production code (``apply_config_to_env``, the ccproxy setup)
+    assigns ``os.environ`` directly, which monkeypatch cannot undo.
+
+    A hook, not a fixture: it restores after every fixture, monkeypatch
+    included, has been torn down. Scoped fixtures must not set environment
+    variables; the restore after each test removes them.
+    """
+    saved = dict(os.environ)
+    for name in [name for name in os.environ if _cleared_env_name(name)]:
+        del os.environ[name]
+    # Child processes are out of the socket guard's reach: git, uv and pip
+    # refuse the network at once instead of waiting out a timeout.
+    os.environ.update(
+        {"GIT_ALLOW_PROTOCOL": "file", "UV_OFFLINE": "1", "PIP_NO_INDEX": "1"}
+    )
+    try:
+        return (yield)
+    finally:
+        for name in [name for name in os.environ if name not in saved]:
+            del os.environ[name]
+        for name, value in saved.items():
+            if os.environ.get(name) != value:
+                os.environ[name] = value
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """Refuse every connection a test opens to another machine, and fail the
+    test that tried; loopback stays open for the servers tests start.
+
+    Nothing answers on the langgraph dev port either, as on CI: a developer's
+    running server would otherwise serve the tests its threads and schedules.
+    A refusal raises, or returns from ``connect_ex``, as a closed port would,
+    so code that handles an offline network carries on.
+
+    uvloop connects in C, past both patches; a test that installs it is not
+    guarded.
+    """
+    from EvoScientist import update_check
+    from EvoScientist.langgraph_dev.sdk import DEFAULT_LANGGRAPH_DEV_PORT
+
+    attempts: list[str] = []
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_sock_connect = BaseProactorEventLoop.sock_connect
+
+    def _refused(sock: socket.socket, address) -> bool:
+        if sock.family not in (socket.AF_INET, socket.AF_INET6):
+            return False
+        host, port = str(address[0]), address[1]
+        if not _is_loopback(host):
+            attempts.append(f"{host}:{port}")
+            return True
+        return port == DEFAULT_LANGGRAPH_DEV_PORT
+
+    def connect(sock, address):
+        if _refused(sock, address):
+            raise ConnectionRefusedError(errno.ECONNREFUSED, "refused by the tests")
+        return real_connect(sock, address)
+
+    def connect_ex(sock, address):
+        if _refused(sock, address):
+            return errno.ECONNREFUSED
+        return real_connect_ex(sock, address)
+
+    # Windows' default event loop connects through ConnectEx, never calling
+    # socket.connect, so async clients are checked here instead.
+    async def sock_connect(loop, sock, address):
+        if _refused(sock, address):
+            raise ConnectionRefusedError(errno.ECONNREFUSED, "refused by the tests")
+        return await real_sock_connect(loop, sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+    monkeypatch.setattr(BaseProactorEventLoop, "sock_connect", sock_connect)
+    # The TUI and CLI check PyPI for a newer release at start.
+    monkeypatch.setattr(update_check, "is_update_available", lambda: (False, None))
+    yield
+    assert not attempts, f"the test tried to reach the network: {attempts}"
 
 
 @pytest.fixture
@@ -84,6 +231,55 @@ def tmp_workspace(tmp_path):
     ws = tmp_path / "workspace"
     ws.mkdir()
     return str(ws)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_langgraph_dev_state(monkeypatch):
+    """Start every test with no server handle and no drift recorded.
+
+    ``langgraph_dev.manager`` keeps the server it started and what it found
+    in module globals; a test that leaves one set (a fake ``Popen`` among
+    them) changes what the next test's ``ensure_langgraph_dev`` does.
+    """
+    from EvoScientist.langgraph_dev import manager
+
+    for name, value in {
+        "_PROCESS": None,
+        "_PROCESS_WORKSPACE": None,
+        "_PROCESS_RUN_DIR": None,
+        "SERVED_WORKSPACE": None,
+        "CONFIG_DRIFT_SINCE_LAUNCH": False,
+        "AGENT_SHELL_DRIFT": None,
+        "_ASYNC_SUBAGENTS_AVAILABLE": False,
+        "_LOG_OFFSET_AT_START": 0,
+    }.items():
+        monkeypatch.setattr(manager, name, value)
+
+
+@pytest.fixture(autouse=True)
+def _quickjs_snapshots_without_diffs(monkeypatch):
+    """Store every QuickJS snapshot whole, as ``encode_snapshot`` itself does
+    when a diff would not pay off. Diffing it against the previous turn's
+    costs seconds per turn of a real graph, and no test reads the diff."""
+    from langchain_quickjs import _snapshot, middleware
+
+    monkeypatch.setattr(
+        middleware,
+        "encode_snapshot",
+        lambda payload, prior: (_snapshot.SNAP, payload),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_health_server(monkeypatch):
+    """Channel runners start no health server unless a test asks for a port.
+
+    The default binds ``0.0.0.0:8080``: open to the LAN while tests run, and
+    shared by every test that starts a runner at the same time.
+    """
+    from EvoScientist.channels.channel_manager import ChannelManager
+
+    monkeypatch.setitem(ChannelManager.__init__.__kwdefaults__, "health_port", 0)
 
 
 @pytest.fixture(autouse=True)
@@ -199,9 +395,8 @@ def _isolate_user_dirs(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture
-def runtime_store(monkeypatch):
-    """The in-memory runtime's store, empty, with every served graph registered."""
-    # Read when langgraph-api's config is first imported, as in the server.
+def langgraph_api_env(monkeypatch):
+    """Read when langgraph-api's config is first imported, as in the server."""
     for name, value in {
         "LANGGRAPH_RUNTIME_EDITION": "inmem",
         "REDIS_URI": "fake",
@@ -212,6 +407,25 @@ def runtime_store(monkeypatch):
     # Importing langgraph-api's logging sets the root logger's level.
     root = logging.getLogger()
     level = root.level
+    yield
+    root.setLevel(level)
+
+
+@pytest.fixture
+def no_workspace_setup(monkeypatch):
+    """Start the custom app without setting the served workspace up: that
+    needs the runtime's store, which only ``runtime_store`` provides."""
+    from EvoScientist.langgraph_dev import workspace_setup
+
+    async def skip(_dirs):
+        return None
+
+    monkeypatch.setattr(workspace_setup, "set_up_workspace", skip)
+
+
+@pytest.fixture
+def runtime_store(langgraph_api_env, monkeypatch):
+    """The in-memory runtime's store, empty, with every served graph registered."""
     import langgraph_api.graph as lg_graph
     from langgraph_runtime_inmem.database import GLOBAL_STORE
 
@@ -225,22 +439,6 @@ def runtime_store(monkeypatch):
         GLOBAL_STORE[key] = []
     yield GLOBAL_STORE
     GLOBAL_STORE.update(saved)
-    root.setLevel(level)
-
-
-@pytest.fixture(autouse=True)
-def _restore_openai_auth_mode_env():
-    """Start every test without EVOSCIENTIST_OPENAI_AUTH_MODE and restore it after.
-
-    ``apply_config_to_env`` writes it with a direct ``os.environ`` assignment,
-    which monkeypatch cannot undo.
-    """
-    previous = os.environ.pop("EVOSCIENTIST_OPENAI_AUTH_MODE", None)
-    yield
-    if previous is None:
-        os.environ.pop("EVOSCIENTIST_OPENAI_AUTH_MODE", None)
-    else:
-        os.environ["EVOSCIENTIST_OPENAI_AUTH_MODE"] = previous
 
 
 @pytest.fixture(autouse=True)

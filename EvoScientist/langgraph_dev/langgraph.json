@@ -14,7 +14,7 @@
     },
     "checkpointer": {
         "backend": "custom",
-        "path": "EvoScientist.sessions.create_checkpointer_for_langgraph_api"
+        "path": "EvoScientist.langgraph_dev.checkpointer.server_checkpointer"
     },
     "config": {
         "recursion_limit": 1000000

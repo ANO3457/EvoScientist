@@ -15,13 +15,9 @@ Per-step pruning:
     ``aput()``. The first-run migration sweep cleans up legacy bloat.
 
 WebUI / langgraph-dev checkpointer:
-    ``create_checkpointer_for_langgraph_api()`` — the ``checkpointer.path``
-    target in ``langgraph_dev/langgraph.json`` — backs every ``langgraph
-    dev`` subprocess (deploy / WebUI / CLI-spawned) with this same SQLite
-    file instead of the default pickle-based ``InMemorySaver``, whose flush
-    window and pickle-compatibility failures lose session history on
-    restart (issue #277). On startup it purges leftover evomemory-worker
-    rows and rebuilds the in-memory thread registry from SQLite. See
+    ``create_checkpointer_for_langgraph_api()`` backs every ``langgraph dev``
+    subprocess (deploy / WebUI / CLI-spawned) with this same SQLite file; its
+    docstring says why and what it does at startup. See
     ``_restore_webui_threads_to_global_store`` for the restore scope and
     ``_ApiPruningCheckpointer`` for the metadata stamping that makes WebUI
     threads first-class CLI sessions.
@@ -1926,16 +1922,16 @@ async def _restore_webui_threads_to_global_store() -> bool:
     Restore scope — UUID-format graph threads bound to this server's
     workspace (their binding, :func:`thread_binding`, names the same root, in
     any run folder). The registry holds the root in ``workspace_dir``, the
-    run folder in ``run_dir``. Rows from before ``run_dir`` existed were
-    upgraded by :func:`_upgrade_stored_dirs` when the server opened the DB.
-    This includes the main
+    run folder in ``run_dir``. This includes the main
     graph and async-subagent graphs. Memory-worker graphs are excluded for now:
     they are still treated as disposable residue until worker cloning lands.
     The workspace filter is required because sessions.db is machine-global,
     and an unscoped restore would expose every workspace's history on the
     unauthenticated API — worst case ``--tunnel``. CLI/TUI threads (8-char
     hex IDs, managed by ``list_threads()``) and pre-stamping rows without
-    ``workspace_dir`` are excluded.
+    ``workspace_dir`` are excluded. A run-mode row that
+    :func:`_upgrade_stored_dirs` has not split still holds its run folder
+    in ``workspace_dir``, so its workspace reads as that run folder.
 
     Best-effort: any exception is logged and swallowed so a broken restore
     never prevents the ``langgraph dev`` server from starting. Returns True
@@ -2213,18 +2209,78 @@ async def _sweep_orphaned_runs_in_global_store() -> None:
         _logger.warning("Orphaned-run sweep failed (non-fatal).", exc_info=True)
 
 
+# What a cron's first fire stores of its run user in the cron's payload. The
+# server runs without custom auth, so they carry nothing a fire can't rebuild.
+_CRON_USER_KEYS = (
+    "langgraph_auth_user",
+    "langgraph_auth_user_id",
+    "langgraph_auth_permissions",
+)
+
+
+def _clear_stored_cron_users(store: MutableMapping[str, Any]) -> int:
+    """Drop the stored run user from every cron's payload (issue #665).
+
+    A cron's first fire writes its run user, a ``SimpleUser``, into the cron's
+    stored payload. ``SimpleUser`` does not survive pickling: each load of the
+    saved store, i.e. each restart, wraps its identity in one more ``DotDict``,
+    and a fire after the restart then fails writing its checkpoint metadata
+    (``user_id`` is not JSON serializable). Without the stored user, a fire
+    builds a new one from the cron's ``user_id``. Must run before the cron
+    scheduler's first tick, which fires missed crons at once. Mutates the store
+    in place; returns how many crons changed.
+    """
+    changed = 0
+    for cron in store.get("crons") or []:
+        payload = cron.get("payload")
+        config = payload.get("config") if isinstance(payload, dict) else None
+        configurable = config.get("configurable") if isinstance(config, dict) else None
+        if not isinstance(configurable, dict):
+            continue
+        stored = [key for key in _CRON_USER_KEYS if key in configurable]
+        for key in stored:
+            del configurable[key]
+        changed += bool(stored)
+    return changed
+
+
+async def _clear_stored_cron_users_in_global_store() -> None:
+    """Best-effort :func:`_clear_stored_cron_users` on the live LangGraph registry."""
+    try:
+        from langgraph_runtime_inmem.database import GLOBAL_STORE
+    except ImportError:
+        # langgraph_runtime_inmem not available (unit tests, plain CLI mode).
+        return
+    try:
+        changed = _clear_stored_cron_users(GLOBAL_STORE)
+        if changed:
+            _logger.info(
+                "Cleared the stored run user of %d scheduled task(s).", changed
+            )
+    except Exception:
+        _logger.warning("Clearing stored cron users failed (non-fatal).", exc_info=True)
+
+
 @asynccontextmanager
 async def create_checkpointer_for_langgraph_api() -> AsyncIterator[PruningCheckpointer]:
     """SQLite-backed checkpointer for the ``langgraph dev`` subprocess.
 
-    ``checkpointer.path`` target in ``langgraph_dev/langgraph.json``
-    (applies to every ``langgraph dev`` launch: deploy, WebUI, and the
-    CLI-spawned subprocess). Replaces the default pickle-based
-    ``InMemorySaver``, whose 10s flush window drops recent checkpoints on
-    SIGKILL and whose pickle-incompatible upgrades wipe the whole store
-    (issue #277); here every ``aput()`` commits a WAL transaction and a
-    bad row only loses that row. The langgraph-api adapter detects async
-    context managers and enters them automatically.
+    Opened through the ``checkpointer.path`` target in
+    ``langgraph_dev/langgraph.json``,
+    ``EvoScientist.langgraph_dev.checkpointer.server_checkpointer``. Every
+    ``langgraph dev`` launch (deploy, WebUI, the CLI-spawned subprocess) runs
+    this checkpointer in place of the default pickle-based ``InMemorySaver``.
+    That saver's 10s flush window drops recent checkpoints on SIGKILL, and
+    its pickle-incompatible upgrades wipe the whole store (issue #277); with
+    this one, every ``aput()`` commits a WAL transaction and a bad row only
+    loses that row.
+
+    On startup it sets up the schema, then, each best-effort (a failure does
+    not stop the server): upgrades stored folders, purges leftover
+    evomemory-worker rows, rebuilds the in-memory thread registry from
+    SQLite (and, when that succeeds, drops runs and thread-bound crons whose
+    thread is not in the restored registry), and clears the stored run user
+    from every saved cron.
 
     The yielded ``_ApiPruningCheckpointer`` stamps rows with their thread's
     folders (the binding the graph factory resolved) and graph rows with
@@ -2248,4 +2304,5 @@ async def create_checkpointer_for_langgraph_api() -> AsyncIterator[PruningCheckp
         await _purge_internal_worker_threads()
         if await _restore_webui_threads_to_global_store():
             await _sweep_orphaned_runs_in_global_store()
+        await _clear_stored_cron_users_in_global_store()
         yield saver
