@@ -22,7 +22,7 @@ import pytest
 from EvoScientist.gateway.server import _build_thread_metadata
 from EvoScientist.langgraph_dev import manager
 from EvoScientist.paths import SessionDirs, Workspace, file_tool_path
-from tests.fakes import FakeGraphGateway, FakeThreadStore
+from tests.fakes.common import FakeGraphGateway, FakeThreadStore
 
 TS_RUN = "20260930_120000"
 
@@ -175,11 +175,11 @@ def test_run_mode_memory_is_keyed_to_the_workspace_root(run_dirs, monkeypatch):
 def test_server_starts_in_the_root_with_the_run_folder_in_its_env(
     run_dirs, monkeypatch, tmp_path, runtime_paths
 ):
-    from tests.test_langgraph_dev_server_env import _patch_start_prereqs, _PopenAbort
+    from tests.fakes.langgraph_dev import PopenAbort, patch_start_prereqs
 
     monkeypatch.setenv("EVOSCIENTIST_RUN_DIR", "/inherited")
-    captured = _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
-    with pytest.raises(_PopenAbort):
+    captured = patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+    with pytest.raises(PopenAbort):
         manager.start_langgraph_dev(
             workspace_dir=run_dirs.workspace.root,
             run_dir=run_dirs.run_dir,
@@ -192,11 +192,11 @@ def test_server_starts_in_the_root_with_the_run_folder_in_its_env(
 def test_daemon_server_env_has_no_run_folder(
     workspace, monkeypatch, tmp_path, runtime_paths
 ):
-    from tests.test_langgraph_dev_server_env import _patch_start_prereqs, _PopenAbort
+    from tests.fakes.langgraph_dev import PopenAbort, patch_start_prereqs
 
     monkeypatch.setenv("EVOSCIENTIST_RUN_DIR", "/inherited")
-    captured = _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
-    with pytest.raises(_PopenAbort):
+    captured = patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+    with pytest.raises(PopenAbort):
         manager.start_langgraph_dev(workspace_dir=workspace.root, port=16191)
     assert "EVOSCIENTIST_RUN_DIR" not in captured["env"]
 
@@ -849,7 +849,7 @@ async def test_channel_attachments_follow_resume_into_another_workspace(
         ServeRuntimeState,
         _make_serve_handle_session_resume_cb,
     )
-    from tests.fakes import StubChannel
+    from tests.fakes.common import StubChannel
 
     other = Workspace(tmp_path / "other")
     manager = ChannelManager(MessageBus(), media_dir=workspace.media_dir)

@@ -156,6 +156,25 @@ def _no_network(monkeypatch):
 
 
 @pytest.fixture
+def langgraph_api_env(monkeypatch):
+    """Read when langgraph-api's config is first imported, as in the server."""
+    import logging
+
+    for name, value in {
+        "LANGGRAPH_RUNTIME_EDITION": "inmem",
+        "REDIS_URI": "fake",
+        "DATABASE_URI": ":memory:",
+        "MIGRATIONS_PATH": "__inmem",
+    }.items():
+        monkeypatch.setenv(name, value)
+    # Importing langgraph-api's logging sets the root logger's level.
+    root = logging.getLogger()
+    level = root.level
+    yield
+    root.setLevel(level)
+
+
+@pytest.fixture
 def sample_tool_call():
     """A minimal tool call dict."""
     return {"id": "tc_001", "name": "execute", "args": {"command": "ls -la"}}
@@ -357,7 +376,10 @@ def _isolate_user_dirs(tmp_path_factory, monkeypatch):
     from EvoScientist.cli import tui_interactive
     from EvoScientist.mcp import client as mcp_client
 
-    root = tmp_path_factory.mktemp("user")
+    # mktemp() lists the whole base folder, which gains a folder every test.
+    users = tmp_path_factory.getbasetemp() / "users"
+    users.mkdir(exist_ok=True)
+    root = Path(tempfile.mkdtemp(dir=users))
     data_dir = root / ".evoscientist"
     config_dir = root / "config" / "evoscientist"
     monkeypatch.setattr(paths, "DATA_DIR", data_dir)
