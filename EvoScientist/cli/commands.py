@@ -763,7 +763,6 @@ def _ensure_async_subagent_server(
                 backend=backend,
             )
             _reconcile_autoskill_schedule(config, workspace=dirs.workspace)
-            _adopt_stale_scheduled_tasks(workspace=dirs.workspace)
     except WorkspaceMismatchError as exc:
         console.print(f"[red]{exc}[/red]")
         _remove_unused_run_dir(dirs.run_dir)
@@ -826,9 +825,7 @@ def _reconcile_autoskill_schedule(config: Any, *, workspace: Workspace) -> None:
     """Best-effort reconciliation for EvoMemory's hidden AutoSkills cron.
 
     The cron belongs to the workspace, whichever run folder the session
-    works in. Only for a server known to serve *workspace*, as for
-    ``_adopt_stale_scheduled_tasks``: the reconcile replaces crons it counts as
-    the workspace's, and in another workspace's store those are not.
+    works in. Only for a server known to serve *workspace*.
     """
     try:
         from ..langgraph_dev import manager
@@ -840,30 +837,6 @@ def _reconcile_autoskill_schedule(config: Any, *, workspace: Workspace) -> None:
     except Exception:
         logging.getLogger(__name__).warning(
             "Failed to reconcile EvoMemory AutoSkills schedule", exc_info=True
-        )
-
-
-def _adopt_stale_scheduled_tasks(*, workspace: Workspace) -> None:
-    """Best-effort re-tagging of the served store's untagged and moved tasks.
-
-    Their runs then work in *workspace* and pass the server's folder check.
-    Only for a server known to serve *workspace*: a reused server without a
-    workspace record, or one another session has since moved, may hold another
-    workspace's store, whose crons this must not take over.
-    """
-    try:
-        from ..cron import schedule as crons
-        from ..langgraph_dev import manager
-
-        if manager.SERVED_WORKSPACE != workspace.root:
-            return
-        if crons.is_available():
-            crons.adopt_stale_tasks(
-                crons._client(), workspace, run_kind=crons.SCHEDULED_RUN_KIND
-            )
-    except Exception:
-        logging.getLogger(__name__).warning(
-            "Failed to re-tag stale scheduled tasks", exc_info=True
         )
 
 
@@ -993,7 +966,6 @@ async def _sync_background_agent_server_workspace(
             config,
             workspace=dirs.workspace,
         )
-        await asyncio.to_thread(_adopt_stale_scheduled_tasks, workspace=dirs.workspace)
 
 
 async def _move_server_or_keep_session(

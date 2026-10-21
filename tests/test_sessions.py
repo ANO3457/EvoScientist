@@ -2829,13 +2829,13 @@ class TestRestoreWebuiThreadsToGlobalStore(unittest.IsolatedAsyncioTestCase):
         assert added[0]["metadata"].get("workspace_dir") == Workspace(self._WS).key
         assert added[0]["metadata"].get("model") == "test-model"
 
-    async def test_removes_preloaded_uuid_entries_outside_restore_scope(self):
-        """Stale and out-of-scope .pckl UUID entries are dropped.
+    async def test_removes_preloaded_uuid_entries_without_checkpoints(self):
+        """Only .pckl UUID entries with no checkpoints are dropped.
 
-        Stale UUID entries point at deleted/lost state and render as empty
-        sessions (the #277 symptom). Out-of-scope UUID entries point at another
-        workspace's state and must not remain in this server's unauthenticated
-        thread registry. CLI-style non-UUID entries are never touched.
+        They point at deleted or lost state and render as empty sessions.
+        An entry with checkpoints stays, whichever project it is bound to:
+        the server's store holds only threads it served. CLI-style non-UUID
+        entries are never touched.
         """
         import sys
         import uuid as _uuid_mod
@@ -2883,8 +2883,7 @@ class TestRestoreWebuiThreadsToGlobalStore(unittest.IsolatedAsyncioTestCase):
         assert _uuid_mod.UUID(ghost) not in ids, f"ghost must be removed, got {ids}"
         assert ghost not in ids, f"ghost must be removed (str form), got {ids}"
         assert "notauuid" in ids, "CLI-style entries must never be touched"
-        assert _uuid_mod.UUID(out_of_scope) not in ids
-        assert out_of_scope not in ids
+        assert _uuid_mod.UUID(out_of_scope) in ids
         # In-scope thread restored as usual.
         assert _uuid_mod.UUID(in_scope) in ids
 

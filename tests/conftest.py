@@ -394,6 +394,21 @@ def _isolate_user_dirs(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(update_check, "CACHE_FILE", config_dir / "latest_version.json")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_registry(monkeypatch):
+    """Each test reads the project registry from its own data folder, and
+    registers projects with a lock of its own event loop."""
+    import sys
+
+    module = sys.modules.get("EvoScientist.langgraph_dev.registry")
+    if module is not None:
+        monkeypatch.setattr(module, "REGISTRY", module.Registry())
+    module = sys.modules.get("EvoScientist.langgraph_dev.workspace_setup")
+    if module is not None:
+        monkeypatch.setattr(module, "_lock", None)
+        monkeypatch.setattr(module, "_warm_lock", None)
+
+
 @pytest.fixture
 def langgraph_api_env(monkeypatch):
     """Read when langgraph-api's config is first imported, as in the server."""
@@ -433,7 +448,7 @@ def runtime_store(langgraph_api_env, monkeypatch):
 
     for graph_id in served_graph_ids():
         monkeypatch.setitem(lg_graph.GRAPHS, graph_id, object())
-    tables = ("assistants", "assistant_versions", "threads", "runs")
+    tables = ("assistants", "assistant_versions", "threads", "runs", "crons")
     saved = {key: list(GLOBAL_STORE.get(key, [])) for key in tables}
     for key in tables:
         GLOBAL_STORE[key] = []

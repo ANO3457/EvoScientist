@@ -79,8 +79,16 @@ def test_list_proactive_crons_keeps_only_this_workspace(workspace, tmp_path):
     client = MagicMock()
     client.crons.search.side_effect = [
         [
-            {"cron_id": "c1", "metadata": {"workspace_dir": workspace.key}},
-            {"cron_id": "c2", "metadata": {"workspace_dir": other.as_posix()}},
+            {
+                "cron_id": "c1",
+                "assistant_id": workspace_assistant_id("proactive", workspace),
+                "metadata": {"workspace_dir": workspace.key},
+            },
+            {
+                "cron_id": "c2",
+                "assistant_id": workspace_assistant_id("proactive", other.as_posix()),
+                "metadata": {"workspace_dir": workspace.key},
+            },
         ],
         [],
     ]

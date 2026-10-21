@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
+from typing import TYPE_CHECKING
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -41,6 +43,11 @@ from EvoScientist.langgraph_dev import workspace_setup
 from EvoScientist.langgraph_dev.boundary import BOUNDARY_ENV, BrowserBoundary, Trust
 from EvoScientist.llm.models import list_model_picker_entries
 from EvoScientist.local_secret import load_local_secret, require_local_secret
+
+if TYPE_CHECKING:
+    from EvoScientist.paths import Workspace
+
+logger = logging.getLogger(__name__)
 
 
 async def get_models(_request: Request) -> JSONResponse:
@@ -245,6 +252,109 @@ async def get_workspace(_request: Request) -> JSONResponse:
     return JSONResponse({"run_dir": None} | dirs.metadata())
 
 
+def _registered_projects() -> list[dict[str, object]]:
+    from pathlib import Path
+
+    from EvoScientist.langgraph_dev.registry import REGISTRY
+
+    return [
+        {"workspace_dir": key, "missing": not Path(key).is_dir()}
+        for key in REGISTRY.registered()
+    ]
+
+
+async def list_workspaces(_request: Request) -> JSONResponse:
+    """Return the registered projects as ``{"workspaces": [{workspace_dir,
+    missing}]}``; ``missing`` marks a project whose folder no longer exists."""
+    projects = await asyncio.to_thread(_registered_projects)
+    return JSONResponse({"workspaces": projects})
+
+
+async def register_workspace(request: Request) -> JSONResponse:
+    """Register the project in the body's ``workspace_dir`` and set it up.
+
+    Answers once its setup is done (see
+    :func:`~EvoScientist.langgraph_dev.workspace_setup.register_workspace`),
+    with ``{"workspace_dir": <key>}``. A folder that does not exist is
+    refused, and never created; a setup that fails answers ``500`` (a project
+    that was not registered stays unregistered). Needs the local secret.
+    """
+    from EvoScientist.langgraph_dev.folder_check import read_workspace_or_none
+    from EvoScientist.paths import SessionDirs
+
+    if (denied := require_local_secret(request)) is not None:
+        return denied
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    value = body.get("workspace_dir") if isinstance(body, dict) else None
+    workspace = await asyncio.to_thread(read_workspace_or_none, value)
+    if workspace is None:
+        return JSONResponse({"error": "invalid_path"}, status_code=400)
+    try:
+        async with workspace_setup.registration_lock():
+            await workspace_setup.register_workspace(SessionDirs(workspace))
+    except workspace_setup.FolderMissingError:
+        return JSONResponse({"error": "folder_missing"}, status_code=400)
+    except Exception as exc:
+        logger.exception("Could not set %s up.", workspace.key)
+        return JSONResponse(
+            {"error": "setup_failed", "detail": str(exc)}, status_code=500
+        )
+    return JSONResponse({"workspace_dir": workspace.key})
+
+
+async def _unregister(workspace: Workspace) -> JSONResponse:
+    from EvoScientist.langgraph_dev import server_crons
+    from EvoScientist.langgraph_dev.registry import REGISTRY
+
+    if not await asyncio.to_thread(REGISTRY.is_registered, workspace.key):
+        return JSONResponse({"error": "not_registered"}, status_code=404)
+    crons = await server_crons.project_crons(workspace)
+    if enabled := server_crons.enabled_user_crons(crons):
+        return JSONResponse(
+            {
+                "error": "enabled_user_crons",
+                "cron_ids": [str(cron["cron_id"]) for cron in enabled],
+            },
+            status_code=409,
+        )
+    await server_crons.delete_crons(
+        [cron["cron_id"] for cron in server_crons.system_crons(crons)]
+    )
+    await asyncio.to_thread(REGISTRY.set_registered, workspace.key, False)
+    return JSONResponse({"workspace_dir": workspace.key})
+
+
+async def unregister_workspace(request: Request) -> JSONResponse:
+    """Unregister the project in the ``workspace_dir`` query parameter.
+
+    Its folder, threads, assistants and user crons all stay; its AutoSkills
+    and proactive crons are deleted (their reconciles recreate them).
+    Refused (``409``) while it has an enabled user cron, also when its folder
+    is missing: a client disables or deletes those first. Waits for a
+    registration in progress. Needs the local secret.
+    """
+    from EvoScientist.langgraph_dev.folder_check import read_workspace_or_none
+
+    if (denied := require_local_secret(request)) is not None:
+        return denied
+    workspace = await asyncio.to_thread(
+        read_workspace_or_none, request.query_params.get("workspace_dir")
+    )
+    if workspace is None:
+        return JSONResponse({"error": "invalid_path"}, status_code=400)
+    try:
+        async with workspace_setup.registration_lock():
+            return await _unregister(workspace)
+    except Exception as exc:
+        logger.exception("Could not unregister %s.", workspace.key)
+        return JSONResponse(
+            {"error": "unregister_failed", "detail": str(exc)}, status_code=500
+        )
+
+
 async def get_settings(_request: Request) -> JSONResponse:
     """Return the configuration for the WebUI's wizard and settings page.
 
@@ -334,6 +444,9 @@ def _build_app() -> Starlette:
             ),
             Route("/api/policy", post_policy, methods=["POST"]),
             Route("/api/workspace", get_workspace, methods=["GET"]),
+            Route("/api/workspaces", list_workspaces, methods=["GET"]),
+            Route("/api/workspaces", register_workspace, methods=["POST"]),
+            Route("/api/workspaces", unregister_workspace, methods=["DELETE"]),
             Route("/api/local-secret/verify", verify_local_secret, methods=["GET"]),
             Route("/api/settings", get_settings, methods=["GET"]),
             Route("/api/settings", patch_settings, methods=["PATCH"]),

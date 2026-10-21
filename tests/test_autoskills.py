@@ -939,10 +939,22 @@ class _AsyncFakeCrons:
     """Two pages: a full page of another workspace's crons, then ours."""
 
     def __init__(self, workspace: Workspace, other: str) -> None:
+        theirs = workspace_assistant_id(AUTOSKILL_GRAPH_ID, other)
+        ours = workspace_assistant_id(AUTOSKILL_GRAPH_ID, workspace)
         self.rows = [
-            {"cron_id": f"theirs-{i}", "metadata": {"workspace_dir": other}}
+            {
+                "cron_id": f"theirs-{i}",
+                "assistant_id": theirs,
+                "metadata": {"workspace_dir": other},
+            }
             for i in range(1000)
-        ] + [{"cron_id": "cron-async", "metadata": {"workspace_dir": workspace.key}}]
+        ] + [
+            {
+                "cron_id": "cron-async",
+                "assistant_id": ours,
+                "metadata": {"workspace_dir": workspace.key},
+            }
+        ]
         self.calls: list[dict] = []
 
     async def search(self, *, metadata, limit, offset):

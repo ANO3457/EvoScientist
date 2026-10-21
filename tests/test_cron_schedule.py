@@ -5,7 +5,8 @@ from unittest.mock import MagicMock
 from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
 
 
-def _patch_client(monkeypatch):
+def _patch_client(monkeypatch, workspace=None):
+    """A fake client whose one scheduled task is *workspace*'s."""
     from EvoScientist.cron import schedule as crons
 
     fake = MagicMock()
@@ -13,6 +14,9 @@ def _patch_client(monkeypatch):
     fake.crons.search.return_value = [
         {
             "cron_id": "c-1",
+            "assistant_id": workspace_assistant_id("scheduler", workspace)
+            if workspace is not None
+            else None,
             "schedule": "*/10 * * * *",
             "metadata": {"run_kind": "scheduled_task", "name": "weather"},
         },
@@ -45,7 +49,7 @@ def test_create_schedule_targets_scheduler(monkeypatch, workspace):
 
 
 def test_list_schedules_uses_server_side_filter(monkeypatch, workspace):
-    crons, fake = _patch_client(monkeypatch)
+    crons, fake = _patch_client(monkeypatch, workspace)
     out = crons.list_schedules(workspace=workspace)
     assert [c["cron_id"] for c in out] == ["c-1"]
     # Filtered server-side by run_kind metadata (the workspace is filtered
@@ -56,7 +60,7 @@ def test_list_schedules_uses_server_side_filter(monkeypatch, workspace):
 
 
 def test_delete_and_set_enabled(monkeypatch, workspace):
-    crons, fake = _patch_client(monkeypatch)
+    crons, fake = _patch_client(monkeypatch, workspace)
     (row,) = crons.list_schedules(workspace=workspace)
     crons.delete_schedule(row, workspace=workspace)
     fake.crons.delete.assert_called_once_with("c-1")

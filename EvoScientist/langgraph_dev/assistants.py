@@ -52,6 +52,19 @@ def workspace_assistant_id(graph_id: str, workspace: Workspace | str) -> str:
     )
 
 
+def workspace_assistants(workspace: Workspace | str) -> dict[str, str]:
+    """*workspace*'s assistants, one per served graph: ID to graph."""
+    return {
+        workspace_assistant_id(graph_id, workspace): graph_id
+        for graph_id in _SERVED_GRAPH_IDS
+    }
+
+
+def workspace_assistant_ids(workspace: Workspace | str) -> frozenset[str]:
+    """The IDs of *workspace*'s assistants, one per served graph."""
+    return frozenset(workspace_assistants(workspace))
+
+
 def launch_assistant_id(graph_id: str, workspace: Workspace | str | None) -> str:
     """The assistant a run named *graph_id* is launched on for *workspace*:
     the graph's workspace assistant; *graph_id* itself without a workspace,

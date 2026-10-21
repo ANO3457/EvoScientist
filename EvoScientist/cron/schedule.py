@@ -6,22 +6,19 @@ NL ``schedule_task`` tool share one implementation, and every cron (AutoSkills'
 too) is created with :func:`create_cron`, which tags it, and deleted with
 :func:`delete_cron`, which checks it is the workspace's own.
 
-Every cron belongs to a workspace: it carries the workspace root in
-``config.configurable`` and ``metadata`` (``workspace_dir``), runs in that root,
-and is listed, paused and deleted only from that workspace. Crons nobody else
-can own (untagged, or tagged with a folder that no longer exists) belong to
-whichever workspace the server serves.
+Every cron belongs to the workspace whose assistant it runs on, and is listed,
+paused and deleted only from that workspace. It also carries the workspace root
+in ``config.configurable`` and ``metadata`` (``workspace_dir``), for display.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langgraph_sdk.schema import Cron, Run
 
-from ..langgraph_dev.assistants import launch_assistant_id
+from ..langgraph_dev.assistants import launch_assistant_id, workspace_assistant_ids
 from ..langgraph_dev.sdk import (
     configured_langgraph_dev_url,
     default_scheduler_timezone,
@@ -81,49 +78,14 @@ def workspace_key(value: Any) -> str | None:
         return None
 
 
+def _runs_on(cron: Any, assistant_ids: frozenset[str]) -> bool:
+    return str((cron or {}).get("assistant_id")) in assistant_ids
+
+
 def belongs_to(cron: Any, workspace: Workspace) -> bool:
-    """True if *cron* is one of *workspace*'s scheduled tasks.
-
-    Tags are compared in the stored form, so tags written before it (an
-    unresolved or Windows path) still match. The server only loads the store
-    of the workspace it serves, so a cron nobody else can own belongs to it:
-    one created before tasks were tagged, or one tagged with a folder that no
-    longer exists (the project was moved or renamed, and its store with it).
-    """
-    tag = ((cron or {}).get("metadata") or {}).get("workspace_dir")
-    if not isinstance(tag, str) or not tag:
-        return True
-    key = workspace_key(tag)
-    if key == workspace.key:
-        return True
-    return key is not None and not Path(key).is_dir()
-
-
-def adopt_stale_tasks(client: Any, workspace: Workspace, *, run_kind: str) -> int:
-    """Tag *workspace*'s crons of *run_kind* that carry no live tag.
-
-    Crons from before tasks were tagged, and crons tagged with a folder that
-    no longer exists, get this workspace's tag and run config, so they list,
-    pause and delete here and their runs pass the server's folder check.
-    Returns how many were re-tagged.
-    """
-    adopted = 0
-    for cron in search_all(client, metadata={"run_kind": run_kind}):
-        if not belongs_to(cron, workspace):
-            continue
-        tag = (cron.get("metadata") or {}).get("workspace_dir")
-        if isinstance(tag, str) and workspace_key(tag) == workspace.key:
-            continue
-        client.crons.update(
-            str(cron["cron_id"]),
-            # The full metadata: a server that replaces it rather than merging
-            # would otherwise drop run_kind, and the task would vanish from
-            # every listing while it keeps firing.
-            metadata={**(cron.get("metadata") or {}), "workspace_dir": workspace.key},
-            config=run_config(workspace),
-        )
-        adopted += 1
-    return adopted
+    """True if *cron* is one of *workspace*'s: it runs on one of *workspace*'s
+    assistants. Its ``workspace_dir`` tag is only for display."""
+    return _runs_on(cron, workspace_assistant_ids(workspace))
 
 
 # Crons per search page (the server's maximum). Workspaces are filtered after
@@ -170,8 +132,9 @@ async def asearch_all(client: Any, *, metadata: dict[str, Any]) -> list[Cron]:
 
 
 def owned(rows: list[Cron], workspace: Workspace) -> list[Cron]:
-    """The crons of *rows* that belong to *workspace* (resolves paths)."""
-    return [row for row in rows if belongs_to(row, workspace)]
+    """The crons of *rows* that belong to *workspace*."""
+    assistant_ids = workspace_assistant_ids(workspace)
+    return [row for row in rows if _runs_on(row, assistant_ids)]
 
 
 def _scheduler_url() -> str:
@@ -273,11 +236,9 @@ def list_schedules(*, workspace: Workspace) -> list[Cron]:
     """Return *workspace*'s EvoScientist scheduled tasks.
 
     Filtered server-side by ``run_kind`` metadata (the cron backend matches by
-    metadata containment), so other kinds of crons are never read. We filter
-    on metadata rather than ``assistant_id`` because crons created before
-    workspace assistants run on the graph's own assistant. The
-    workspace is filtered here rather than in the search, which matches values
-    exactly: see :func:`belongs_to`.
+    metadata containment), so other kinds of crons are never read; the
+    project here, by the cron's assistant (:func:`belongs_to`), since a
+    search takes one assistant and a project has one per graph.
     """
     rows = search_all(_client(), metadata={"run_kind": SCHEDULED_RUN_KIND})
     return owned(rows, workspace)

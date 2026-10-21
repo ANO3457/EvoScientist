@@ -1,4 +1,5 @@
-"""Scheduled tasks belong to a workspace: tagged, listed and managed within it."""
+"""Scheduled tasks belong to a workspace: they run on its assistant, and are
+listed and managed within it."""
 
 from __future__ import annotations
 
@@ -8,14 +9,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from EvoScientist.cron import schedule as crons
+from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
 from EvoScientist.paths import SessionDirs, Workspace
 
 
 def _cron(cron_id: str, workspace_dir: str | None = None, **metadata) -> dict:
+    """A scheduled task, on *workspace_dir*'s scheduler assistant if given."""
     meta = {"run_kind": crons.SCHEDULED_RUN_KIND, "name": cron_id, **metadata}
+    cron = {"cron_id": cron_id, "schedule": "0 7 * * *", "metadata": meta}
     if workspace_dir is not None:
         meta["workspace_dir"] = workspace_dir
-    return {"cron_id": cron_id, "schedule": "0 7 * * *", "metadata": meta}
+        cron["assistant_id"] = workspace_assistant_id("scheduler", workspace_dir)
+    return cron
 
 
 @pytest.fixture
@@ -28,7 +33,8 @@ def other(tmp_path) -> Workspace:
 
 @pytest.fixture
 def client(workspace, other, monkeypatch) -> MagicMock:
-    """A server with one task of each workspace and one untagged task."""
+    """A server with one task of each workspace and one on no workspace's
+    assistant."""
     fake = MagicMock()
     fake.crons.search.return_value = [
         _cron("mine", workspace.key),
@@ -38,72 +44,6 @@ def client(workspace, other, monkeypatch) -> MagicMock:
     monkeypatch.setattr(crons, "_client", lambda: fake)
     monkeypatch.setattr(crons, "_default_timezone", lambda: "UTC")
     return fake
-
-
-def test_belongs_to_matches_tagged_workspace(workspace, other, tmp_path):
-    link = tmp_path / "link"
-    link.symlink_to(workspace.root, target_is_directory=True)
-
-    assert crons.belongs_to(_cron("a", workspace.key), workspace)
-    assert crons.belongs_to(_cron("a", f"{link}/"), workspace)
-    assert not crons.belongs_to(_cron("a", other.key), workspace)
-    # A tag that is no path here names no workspace here.
-    assert not crons.belongs_to(_cron("a", "/tmp/evil\x00x"), workspace)
-    # Created before tasks were tagged: the server serves one workspace.
-    assert crons.belongs_to(_cron("a"), workspace)
-    # The project was moved or renamed: its store, and the cron in it, came along.
-    assert crons.belongs_to(_cron("a", str(tmp_path / "gone")), workspace)
-
-
-def test_adopt_stale_tasks_retags_untagged_and_moved_crons(workspace, other, tmp_path):
-    fake = MagicMock()
-    fake.crons.search.return_value = [
-        _cron("mine", workspace.key),
-        _cron("untagged"),
-        _cron("moved", str(tmp_path / "gone")),
-        _cron("theirs", other.key),
-    ]
-
-    adopted = crons.adopt_stale_tasks(
-        fake, workspace, run_kind=crons.SCHEDULED_RUN_KIND
-    )
-
-    assert adopted == 2
-    assert sorted(c.args[0] for c in fake.crons.update.call_args_list) == [
-        "moved",
-        "untagged",
-    ]
-    for call in fake.crons.update.call_args_list:
-        cron_id = call.args[0]
-        assert call.kwargs == {
-            # The rest of the metadata is kept, whatever the server merges.
-            "metadata": {
-                "run_kind": crons.SCHEDULED_RUN_KIND,
-                "name": cron_id,
-                "workspace_dir": workspace.key,
-            },
-            "config": {"configurable": {"workspace_dir": workspace.key}},
-        }
-
-
-@pytest.mark.parametrize("served", ["unknown", "other", "workspace"])
-def test_startup_adoption_needs_server_serving_the_workspace(
-    workspace, other, client, monkeypatch, served
-):
-    """Moved and untagged tasks are taken over only from a server known to
-    hold this workspace's store; a reused server without a workspace record,
-    or one moved to another workspace since, may hold another workspace's."""
-    from EvoScientist.cli import commands
-    from EvoScientist.langgraph_dev import manager
-
-    roots = {"unknown": None, "other": other.root, "workspace": workspace.root}
-    monkeypatch.setattr(crons, "is_available", lambda: True)
-    monkeypatch.setattr(manager, "SERVED_WORKSPACE", roots[served])
-
-    commands._adopt_stale_scheduled_tasks(workspace=workspace)
-
-    retagged = [c.args[0] for c in client.crons.update.call_args_list]
-    assert retagged == (["untagged"] if served == "workspace" else [])
 
 
 @pytest.mark.parametrize("served", ["unknown", "other", "workspace"])
@@ -130,9 +70,18 @@ def test_startup_autoskills_reconcile_needs_server_serving_the_workspace(
     assert calls == ([workspace.root] if served == "workspace" else [])
 
 
+def test_belongs_to_matches_workspace_assistant(workspace, other):
+    assert crons.belongs_to(_cron("a", workspace.key), workspace)
+    assert not crons.belongs_to(_cron("a", other.key), workspace)
+    # The tag alone is for display: a cron on no workspace assistant is no one's.
+    untagged = _cron("a")
+    untagged["metadata"]["workspace_dir"] = workspace.key
+    assert not crons.belongs_to(untagged, workspace)
+
+
 def test_list_schedules_filters_by_workspace(workspace, client):
     ids = [row["cron_id"] for row in crons.list_schedules(workspace=workspace)]
-    assert ids == ["mine", "untagged"]
+    assert ids == ["mine"]
 
 
 def test_list_schedules_reads_every_page(workspace, other, client):
@@ -312,8 +261,9 @@ def test_reconcile_autoskills_ignores_other_workspaces(
 SYSTEM_ID = "1f1e4f53-0b5e-5c8b-9a43-0e0f8c3f6a11"
 
 
-def test_reconcile_autoskills_replaces_cron_on_graph_assistant(workspace, autoskills):
-    """A cron from before workspace assistants is recreated on the workspace's."""
+def test_reconcile_autoskills_leaves_cron_on_other_assistant(workspace, autoskills):
+    """A cron on the graph's own assistant is no project's: the reconcile
+    creates the workspace's and leaves that one alone."""
     from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
     from EvoScientist.memory.autoskills.schedule import AUTOSKILL_GRAPH_ID
 
@@ -326,7 +276,7 @@ def test_reconcile_autoskills_replaces_cron_on_graph_assistant(workspace, autosk
     result = schedule.reconcile_autoskill_schedule(config, workspace_dir=workspace.root)
 
     assert result["status"] == "created"
-    fake.crons.delete.assert_called_once_with("old")
+    fake.crons.delete.assert_not_called()
     assert fake.crons.create.call_args.kwargs["assistant_id"] == (
         workspace_assistant_id(AUTOSKILL_GRAPH_ID, workspace)
     )
@@ -400,18 +350,3 @@ def test_reconcile_autoskills_replaces_unforwarded_cron(workspace, other, autosk
     assert fake.crons.create.call_args.kwargs["config"] == {
         "configurable": {"workspace_dir": workspace.key}
     }
-
-
-def test_reconcile_autoskills_replaces_moved_folder_cron(
-    workspace, autoskills, tmp_path
-):
-    """The project was renamed: the store, and its cron tagged with the old
-    folder, came along. The cron is ours and is recreated for the new root."""
-    schedule, fake, config = autoskills
-    gone = str(tmp_path / "gone")
-    fake.crons.search.return_value = [_autoskill_cron("stale", gone, forwarded=True)]
-
-    result = schedule.reconcile_autoskill_schedule(config, workspace_dir=workspace.root)
-
-    assert result["status"] == "created"
-    fake.crons.delete.assert_called_once_with("stale")

@@ -8,11 +8,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from EvoScientist.langgraph_dev import factories
+from EvoScientist.langgraph_dev import factories, registry
 from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
 from EvoScientist.langgraph_dev.factories import served_graph
 from EvoScientist.langgraph_dev.folder_check import (
+    ProjectNotServedError,
     RunFolderMismatchError,
+    neutral_dirs,
     resolve_folders,
 )
 from EvoScientist.paths import SessionDirs, Workspace
@@ -23,8 +25,17 @@ RUN_ACCESS = "threads.create_run"
 
 
 @pytest.fixture
-def served(workspace) -> SessionDirs:
-    """A server pinned to a run folder of ``workspace``."""
+def projects(monkeypatch) -> registry.Registry:
+    """This server's registry, empty."""
+    fresh = registry.Registry()
+    monkeypatch.setattr(registry, "REGISTRY", fresh)
+    return fresh
+
+
+@pytest.fixture
+def served(workspace, projects) -> SessionDirs:
+    """A run folder of ``workspace``, a project this server serves."""
+    projects.set_registered(workspace.key, True)
     return SessionDirs(workspace, workspace.runs_dir / RUN)
 
 
@@ -32,8 +43,15 @@ def _config(dirs: SessionDirs | None) -> dict:
     return {"configurable": dirs.metadata() if dirs is not None else {}}
 
 
-def _run(served, configurable, *, bound=None, graph_id="writing-agent"):
-    return resolve_folders(graph_id, RUN_ACCESS, configurable, served, bound)
+def _resolve(access, configurable, *, bound=None, graph_id="writing-agent"):
+    return resolve_folders(graph_id, access, configurable, registry.REGISTRY, bound)
+
+
+def _run(configurable, *, bound=None, graph_id="writing-agent"):
+    """The folders a run works in, which are also the ones it stamps."""
+    dirs, stamp = _resolve(RUN_ACCESS, configurable, bound=bound, graph_id=graph_id)
+    assert dirs == stamp
+    return stamp
 
 
 # ---------------------------------------------------------------------------
@@ -41,19 +59,39 @@ def _run(served, configurable, *, bound=None, graph_id="writing-agent"):
 # ---------------------------------------------------------------------------
 
 
-def test_runs_without_folders_work_in_project_root(served):
-    root = SessionDirs(served.workspace)
-    assert _run(served, {}) == root
+@pytest.mark.usefixtures("served")
+def test_runs_naming_no_project_are_refused():
+    """No workspace assistant, no folder, no binding: nowhere to work."""
+    with pytest.raises(RunFolderMismatchError, match="names no workspace"):
+        _run({})
+
+
+def test_runs_on_unregistered_project_are_refused(projects, workspace):
+    """Never registered, or unregistered: one error."""
+    configurable = SessionDirs(workspace).metadata()
+    with pytest.raises(ProjectNotServedError, match="does not serve") as exc:
+        _run(configurable)
+    assert not exc.value.missing_folder
+    projects.set_registered(workspace.key, False)
+    with pytest.raises(ProjectNotServedError, match="does not serve"):
+        _run(configurable)
+
+
+def test_runs_in_missing_folder_are_refused(served):
+    served.workspace.root.rmdir()
+    with pytest.raises(ProjectNotServedError, match="does not serve") as exc:
+        _run(served.metadata())
+    assert exc.value.missing_folder
 
 
 def test_runs_for_served_folders_run(served, tmp_path):
-    assert _run(served, served.metadata()) == served
+    assert _run(served.metadata()) == served
 
     # The same folders written another way: a symlink and a trailing slash.
     link = tmp_path / "link"
     link.symlink_to(served.workspace.root, target_is_directory=True)
     assert (
-        _run(served, {"workspace_dir": f"{link}/", "run_dir": str(link / "runs" / RUN)})
+        _run({"workspace_dir": f"{link}/", "run_dir": str(link / "runs" / RUN)})
         == served
     )
 
@@ -61,9 +99,8 @@ def test_runs_for_served_folders_run(served, tmp_path):
 def test_runs_for_other_workspace_are_refused(served, tmp_path):
     other = SessionDirs(Workspace(tmp_path / "other"))
     for graph_id in ("writing-agent", "scheduler"):
-        with pytest.raises(RunFolderMismatchError) as exc:
-            _run(served, other.metadata(), graph_id=graph_id)
-        assert str(served.workspace.root) in str(exc.value)
+        with pytest.raises(ProjectNotServedError) as exc:
+            _run(other.metadata(), graph_id=graph_id)
         assert str(other.workspace.root) in str(exc.value)
 
 
@@ -71,13 +108,13 @@ def test_resolve_folders_refuses_unreadable_folders(served):
     """Present but unreadable is a mismatch, not a run without folders."""
     for workspace_dir in ("/tmp/evil\x00x", 123, "relative/ws"):
         with pytest.raises(RunFolderMismatchError, match="cannot read"):
-            _run(served, {"workspace_dir": workspace_dir})
+            _run({"workspace_dir": workspace_dir})
     # Every graph reads the run folder, including those that work in the root.
     for graph_id in ("writing-agent", "scheduler"):
         for run_dir in ("/tmp/evil\x00x", 123, f"runs/{RUN}"):
             configurable = {"workspace_dir": served.workspace.key, "run_dir": run_dir}
             with pytest.raises(RunFolderMismatchError, match="cannot read"):
-                _run(served, configurable, graph_id=graph_id)
+                _run(configurable, graph_id=graph_id)
 
 
 @pytest.mark.parametrize("graph_id", ["writing-agent", "scheduler"])
@@ -90,16 +127,14 @@ def test_resolve_folders_refuses_run_dir_outside_workspace_runs(
 ):
     with pytest.raises(RunFolderMismatchError, match="not a run folder"):
         _run(
-            served,
             {"workspace_dir": served.workspace.key, "run_dir": str(tmp_path / run_dir)},
             graph_id=graph_id,
         )
 
 
-def test_resolve_folders_refuses_runs_folder_linked_outside_workspace(
-    workspace, tmp_path
-):
+def test_resolve_folders_refuses_runs_folder_linked_outside_workspace(served, tmp_path):
     """Not supported, as stored bindings would lose the run folder."""
+    workspace = served.workspace
     disk = tmp_path / "disk"
     disk.mkdir()
     workspace.runs_dir.symlink_to(disk, target_is_directory=True)
@@ -108,13 +143,13 @@ def test_resolve_folders_refuses_runs_folder_linked_outside_workspace(
         "run_dir": str(workspace.runs_dir / RUN),
     }
     with pytest.raises(RunFolderMismatchError, match="not a run folder"):
-        _run(SessionDirs(workspace), configurable)
+        _run(configurable)
 
 
 def test_resolve_folders_refuses_relative_run_dir(served):
     configurable = {"workspace_dir": served.workspace.key, "run_dir": f"runs/{RUN}"}
     with pytest.raises(RunFolderMismatchError, match="not an absolute path"):
-        _run(served, configurable)
+        _run(configurable)
 
 
 def test_resolve_folders_reads_project_root_as_no_run_folder(served):
@@ -122,16 +157,16 @@ def test_resolve_folders_reads_project_root_as_no_run_folder(served):
         "workspace_dir": served.workspace.key,
         "run_dir": served.workspace.key,
     }
-    assert _run(served, configurable) == SessionDirs(served.workspace)
+    assert _run(configurable) == SessionDirs(served.workspace)
 
 
 def test_runs_work_in_any_run_folder_of_served_project(served):
     other_run = SessionDirs(served.workspace, served.workspace.runs_dir / "other")
-    assert _run(served, other_run.metadata()) == other_run
+    assert _run(other_run.metadata()) == other_run
     # Scheduled tasks and memory workers work in the root, whatever run
     # folder the run forwards.
     root = SessionDirs(served.workspace)
-    assert _run(served, other_run.metadata(), graph_id="scheduler") == root
+    assert _run(other_run.metadata(), graph_id="scheduler") == root
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +179,7 @@ def test_runs_on_workspace_assistant_continue_in_bound_run_folder(served):
     assistant = workspace_assistant_id("writing-agent", served.workspace)
     configurable = {"assistant_id": assistant, "workspace_dir": served.workspace.key}
 
-    assert _run(served, configurable, bound=served) == served
+    assert _run(configurable, bound=served) == served
 
 
 def test_runs_on_workspace_assistant_ignore_merged_workspace(served, tmp_path):
@@ -154,7 +189,7 @@ def test_runs_on_workspace_assistant_ignore_merged_workspace(served, tmp_path):
     assistant = workspace_assistant_id("writing-agent", served.workspace)
     other = SessionDirs(Workspace(tmp_path / "other"))
     configurable = {"assistant_id": assistant, **other.metadata()}
-    assert _run(served, configurable) == SessionDirs(served.workspace)
+    assert _run(configurable) == SessionDirs(served.workspace)
     # A run folder the request forwards is read against the assistant's
     # project, and an unreadable merged workspace is ignored too.
     for workspace_dir in (other.workspace.key, "/tmp/evil\x00x"):
@@ -163,13 +198,13 @@ def test_runs_on_workspace_assistant_ignore_merged_workspace(served, tmp_path):
             "workspace_dir": workspace_dir,
             "run_dir": str(served.run_dir),
         }
-        assert _run(served, configurable) == served
+        assert _run(configurable) == served
 
 
 def test_runs_for_other_run_folder_than_binding_are_refused(served):
     bound = SessionDirs(served.workspace, served.workspace.runs_dir / "other")
     with pytest.raises(RunFolderMismatchError) as exc:
-        _run(served, served.metadata(), bound=bound)
+        _run(served.metadata(), bound=bound)
     assert "This conversation works in" in str(exc.value)
     assert str(bound.run_dir) in str(exc.value)
 
@@ -179,46 +214,52 @@ def test_runs_without_folders_continue_in_binding(served, graph_id):
     """A bare resume names no folder; a graph that works in the root keeps
     the binding's run folder in its stamp."""
     bound = SessionDirs(served.workspace, served.workspace.runs_dir / "other")
-    assert _run(served, {}, bound=bound, graph_id=graph_id) == bound
+    assert _run({}, bound=bound, graph_id=graph_id) == bound
 
 
 def test_runs_on_thread_bound_to_unserved_workspace_are_refused(served, tmp_path):
     bound = SessionDirs(Workspace(tmp_path / "other"))
-    with pytest.raises(RunFolderMismatchError, match="does not serve"):
-        _run(served, bound.metadata(), bound=bound)
-    with pytest.raises(RunFolderMismatchError, match="This conversation works in"):
-        _run(served, {}, bound=bound)
+    with pytest.raises(ProjectNotServedError, match="does not serve"):
+        _run(bound.metadata(), bound=bound)
+    with pytest.raises(ProjectNotServedError, match="does not serve"):
+        _run({}, bound=bound)
 
 
 def test_updates_keep_binding(served, tmp_path):
     """Folders in the request cannot re-bind a thread."""
     elsewhere = SessionDirs(Workspace(tmp_path / "other")).metadata()
 
-    assert (
-        resolve_folders("writing-agent", "threads.update", elsewhere, served, served)
-        == served
-    )
-    assert (
-        resolve_folders("writing-agent", "threads.update", elsewhere, served, None)
-        is None
-    )
+    assert _resolve("threads.update", elsewhere, bound=served) == (served, served)
+    assert _resolve("threads.update", elsewhere) == (neutral_dirs(), None)
 
 
 @pytest.mark.parametrize("graph_id", ["writing-agent", "scheduler"])
 def test_updates_work_in_bound_run_folder(served, graph_id):
     bound = SessionDirs(served.workspace, served.workspace.runs_dir / "other")
-    assert resolve_folders(graph_id, "threads.update", {}, served, bound) == bound
+    assert _resolve("threads.update", {}, bound=bound, graph_id=graph_id) == (
+        bound,
+        bound,
+    )
 
 
 def test_updates_of_threads_bound_to_unserved_workspace_are_refused(served, tmp_path):
     bound = SessionDirs(Workspace(tmp_path / "other"))
-    with pytest.raises(RunFolderMismatchError, match="does not serve"):
-        resolve_folders("writing-agent", "threads.update", {}, served, bound)
+    with pytest.raises(ProjectNotServedError, match="does not serve"):
+        _resolve("threads.update", {}, bound=bound)
 
 
 @pytest.mark.parametrize("access", ["threads.read", "assistants.read"])
-def test_reads_stamp_nothing(served, access):
-    assert resolve_folders("writing-agent", access, {}, served, served) is None
+def test_reads_work_in_served_project_and_stamp_nothing(served, access):
+    configurable = served.metadata()
+    assert _resolve(access, configurable) == (SessionDirs(served.workspace), None)
+
+
+@pytest.mark.parametrize("access", ["threads.read", "assistants.read"])
+def test_reads_without_served_project_get_neutral_graph(served, tmp_path, access):
+    """A system assistant, a legacy thread, an unregistered or missing project."""
+    unserved = SessionDirs(Workspace(tmp_path / "other")).metadata()
+    for configurable in ({}, unserved, {"workspace_dir": "relative/ws"}):
+        assert _resolve(access, configurable) == (neutral_dirs(), None)
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +291,9 @@ class _Built:
 
 @pytest.fixture
 def factory_env(served, monkeypatch):
-    """The served folders, one graph for every key, and no binding."""
+    """A served project, one graph for every key, and no binding."""
     graph = object()
     monkeypatch.setattr(factories, "GRAPHS", _Built(graph))
-    monkeypatch.setattr(factories, "process_session_dirs", lambda: served)
     monkeypatch.setattr(factories, "thread_binding", lambda _thread_id: None)
     return graph
 
@@ -290,7 +330,6 @@ async def test_checkpoint_writes_see_factory_folders(tiny_graph, served, monkeyp
     graph = tiny_graph()
     graph.checkpointer = Recording()
     monkeypatch.setattr(factories, "GRAPHS", _Built(graph))
-    monkeypatch.setattr(factories, "process_session_dirs", lambda: served)
     monkeypatch.setattr(factories, "thread_binding", lambda _thread_id: None)
     config = {"configurable": {"thread_id": "t", **served.metadata()}}
 
@@ -376,6 +415,25 @@ async def _runtime_run(assistant_id: str, thread_id: str, configurable=None) -> 
 async def _create_run(config: dict, graph_id: str = "EvoScientist"):
     await served_graph(graph_id)(config, SimpleNamespace(access_context=RUN_ACCESS))
     return RESOLVED_FOLDERS.get()
+
+
+async def test_runs_on_cron_thread_carry_no_cron_id(runtime_store, served):
+    """A cron's run forwards its cron_id, which the thread does not keep: a
+    later run on that thread is not taken for the cron firing (whose refusal
+    for a missing folder deletes a system cron)."""
+    from EvoScientist.langgraph_dev.assistants import ensure_workspace_assistants
+
+    await ensure_workspace_assistants(served.workspace)
+    assistant = workspace_assistant_id("scheduler", served.workspace)
+    thread_id = "22222222-2222-2222-2222-222222222222"
+    fired = await _runtime_run(assistant, thread_id, {"cron_id": "c1"})
+    for record in (*runtime_store["threads"], *runtime_store["runs"]):
+        record["status"] = "error"
+
+    later = await _runtime_run(assistant, thread_id)
+
+    assert fired["configurable"]["cron_id"] == "c1"
+    assert "cron_id" not in later["configurable"]
 
 
 async def test_refused_run_does_not_pin_thread_to_other_project(
@@ -814,7 +872,6 @@ async def _sync_order(workspace, *, pinned_elsewhere: bool) -> list[str]:
             lambda *a, **k: order.append("move"),
         ),
         patch.object(commands, "_reconcile_autoskill_schedule", lambda *a, **k: None),
-        patch.object(commands, "_adopt_stale_scheduled_tasks", lambda **_k: None),
     ):
         await commands._sync_background_agent_server_workspace(
             MagicMock(), dirs=SessionDirs(workspace)

@@ -13,6 +13,7 @@ per project.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -21,14 +22,21 @@ from typing import Any
 from langgraph_sdk.runtime import ServerRuntime
 from starlette.exceptions import HTTPException
 
-from ..paths import SessionDirs, process_session_dirs
+from ..paths import SessionDirs, Workspace
 from ..sessions import (
     FOLDER_GRAPH_IDS,
     RESOLVED_FOLDERS,
     ThreadBindingError,
     thread_binding,
 )
-from .folder_check import RunFolderMismatchError, resolve_folders
+from . import registry
+from .folder_check import (
+    ProjectNotServedError,
+    RunFolderMismatchError,
+    resolve_folders,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _main(dirs: SessionDirs) -> Any:
@@ -135,7 +143,9 @@ class GraphCache:
     caches, ``os.environ``), so they run one at a time; a graph already built
     is returned without waiting for another's build. A project's graphs stay
     built; graphs built for a run folder are dropped, least recently used
-    first, past ``RUN_FOLDER_GRAPHS``.
+    first, past ``RUN_FOLDER_GRAPHS``. An unregistered project's graphs stay
+    too: resolving an access refuses that project before its graph is asked
+    for.
     """
 
     RUN_FOLDER_GRAPHS = 32
@@ -175,12 +185,6 @@ class GraphCache:
 GRAPHS = GraphCache()
 
 
-def prebuild(dirs: SessionDirs) -> None:
-    """Build every served graph for *dirs*, so first accesses don't wait. Blocking."""
-    for graph_id in BUILDERS:
-        GRAPHS.get(graph_id, dirs)
-
-
 def _graph_for(
     graph_id: str, config: dict[str, Any], access: str
 ) -> tuple[Any, SessionDirs | None]:
@@ -188,33 +192,52 @@ def _graph_for(
     configurable = config.get("configurable") or {}
     thread_id = configurable.get("thread_id")
     writes = access in ("threads.create_run", "threads.update")
-    served = process_session_dirs()
+    bound = thread_binding(thread_id) if thread_id and writes else None
+    dirs, stamp = resolve_folders(
+        graph_id, access, configurable, registry.REGISTRY, bound
+    )
+    return GRAPHS.get(graph_id, dirs), stamp
+
+
+async def _drop_system_cron(cron_id: str, workspace: Workspace) -> None:
+    """Delete *cron_id* if it is one of *workspace*'s system crons; a failure is
+    logged, so the refusal still reaches the run's client."""
+    from .server_crons import drop_system_cron
+
     try:
-        bound = thread_binding(thread_id) if thread_id and writes else None
-        stamp = resolve_folders(graph_id, access, configurable, served, bound)
-    except (RunFolderMismatchError, ThreadBindingError) as exc:
-        if access == "threads.create_run":
-            # A run's error reaches its client by name.
-            raise
-        status = 409 if isinstance(exc, RunFolderMismatchError) else 503
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
-    return GRAPHS.get(graph_id, stamp or served), stamp
+        await drop_system_cron(cron_id, workspace)
+    except Exception:
+        logger.exception("Could not delete cron %s of %s.", cron_id, workspace.root)
 
 
 def served_graph(graph_id: str) -> Callable[..., Awaitable[Any]]:
     """The factory registered for *graph_id* in ``langgraph.json``.
 
-    Picks the folders of each access from its thread's binding and its
-    request (``folder_check.resolve_folders``), refusing an access this server
-    must not serve, and hands them to the checkpointer to stamp.
+    Picks the folders of each access from the registry, its thread's binding
+    and its request (``folder_check.resolve_folders``), refusing an access
+    this server must not serve, and hands them to the checkpointer to stamp.
+    A system cron's run refused because its project's folder is missing
+    deletes the cron (``server_crons.drop_system_cron``).
     """
 
     async def factory(config: dict[str, Any], runtime: ServerRuntime) -> Any:
-        # Reading the binding, resolving folders and building touch the disk,
-        # which blockbuster refuses on the event loop.
-        graph, stamp = await asyncio.to_thread(
-            _graph_for, graph_id, config, runtime.access_context
-        )
+        try:
+            # Reading the binding, resolving folders and building touch the
+            # disk, which blockbuster refuses on the event loop.
+            graph, stamp = await asyncio.to_thread(
+                _graph_for, graph_id, config, runtime.access_context
+            )
+        except (RunFolderMismatchError, ThreadBindingError) as exc:
+            run = runtime.access_context == "threads.create_run"
+            cron_id = (config.get("configurable") or {}).get("cron_id")
+            missing = isinstance(exc, ProjectNotServedError) and exc.missing_folder
+            if run and cron_id and missing:
+                await _drop_system_cron(cron_id, exc.workspace)
+            if run:
+                # A run's error reaches its client by name.
+                raise
+            status = 409 if isinstance(exc, RunFolderMismatchError) else 503
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
         # Set here, in the access's own task, so the checkpoint writes of the
         # run or update that follow see it; a value set in the worker thread
         # would stay there.

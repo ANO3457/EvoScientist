@@ -1693,16 +1693,11 @@ def _api_session_dirs() -> SessionDirs:
     ``start_langgraph_dev`` sets ``EVOSCIENTIST_WORKSPACE_DIR`` (and
     ``EVOSCIENTIST_RUN_DIR`` for a ``--mode=run`` session) on the subprocess.
 
-    NOTE: the first call resolves paths, a blocking syscall. Call this from a
-    sync context or via :func:`_api_session_dirs_async` — never directly from
-    an async function on the dev runtime (blockbuster will flag it).
+    NOTE: the first call resolves paths, a blocking syscall: never call it
+    directly from an async function on the dev runtime (blockbuster will flag
+    it).
     """
     return process_session_dirs()
-
-
-async def _api_session_dirs_async() -> SessionDirs:
-    """Async wrapper for :func:`_api_session_dirs`, run off the event loop."""
-    return await asyncio.to_thread(_api_session_dirs)
 
 
 # Graphs the server builds for a thread's run folder (see
@@ -1908,26 +1903,44 @@ def _stored_session_dirs(
     return {pair: SessionDirs.from_stored(*pair) for pair in set(pairs)}
 
 
-async def _restore_webui_threads_to_global_store() -> bool:
+def _known_workspace_keys() -> set[str]:
+    """The projects whose threads the server restores: every project the
+    registry knows, registered or not, and the folder the server was started
+    in. Blocking."""
+    from .langgraph_dev.registry import REGISTRY
+
+    return REGISTRY.known() | {_api_session_dirs().workspace.key}
+
+
+async def restore_workspace_threads(workspace_key: str) -> bool:
+    """Add one project's threads to the runtime's registry (at its
+    registration); see :func:`_restore_webui_threads_to_global_store`."""
+    return await _restore_webui_threads_to_global_store({workspace_key}, remove=False)
+
+
+async def _restore_webui_threads_to_global_store(
+    scope: set[str] | None = None, *, remove: bool = True
+) -> bool:
     """Re-populate ``GlobalStore["threads"]`` from SQLite on server startup.
 
     The inmem runtime's thread registry lives in memory (pickled to
     ``.langgraph_ops.pckl``) and is cleared on every start — if the pickle
     is absent or corrupt, the WebUI sidebar is empty even though all
-    checkpoint data sits safely in SQLite. This rebuilds it: ghost entries
-    whose threads have no checkpoint rows are dropped, surviving entries
-    are normalized in place, and missing threads are appended as stub
-    dicts that satisfy ``POST /threads/search``.
+    checkpoint data sits safely in SQLite. This rebuilds it: with *remove*,
+    entries whose threads have no checkpoint rows at all are dropped;
+    surviving entries are normalized in place, and missing threads are
+    appended as stub dicts that satisfy ``POST /threads/search``.
 
-    Restore scope — UUID-format graph threads bound to this server's
-    workspace (their binding, :func:`thread_binding`, names the same root, in
-    any run folder). The registry holds the root in ``workspace_dir``, the
-    run folder in ``run_dir``. This includes the main
+    Restore scope — UUID-format graph threads bound to a project in *scope*
+    (workspace keys; by default :func:`_known_workspace_keys`), in any run
+    folder. The binding (:func:`thread_binding`) names the project. The
+    registry holds the root in ``workspace_dir``, the run folder in
+    ``run_dir``. This includes the main
     graph and async-subagent graphs. Memory-worker graphs are excluded for now:
     they are still treated as disposable residue until worker cloning lands.
-    The workspace filter is required because sessions.db is machine-global,
-    and an unscoped restore would expose every workspace's history on the
-    unauthenticated API — worst case ``--tunnel``. CLI/TUI threads (8-char
+    The scope is required because sessions.db is machine-global: threads of
+    a project that was never registered here are not added, so not exposed
+    on the unauthenticated API (worst case ``--tunnel``). CLI/TUI threads (8-char
     hex IDs, managed by ``list_threads()``) and pre-stamping rows without
     ``workspace_dir`` are excluded. A run-mode row that
     :func:`_upgrade_stored_dirs` has not split still holds its run folder
@@ -1955,17 +1968,16 @@ async def _restore_webui_threads_to_global_store() -> bool:
 
     try:
         rows: list[Any] = []
-        # Restore scope: graph threads belonging to THIS server's workspace.
-        # sessions.db is machine-global, so an unscoped restore would
-        # resurrect every workspace's history into this server's thread
-        # registry — and expose it over the unauthenticated API / --tunnel.
         # Legacy WebUI/CLI interop rows without graph_id are restored as the
         # main graph only when they carry agent_name == AGENT_NAME. Rows
         # predating workspace stamping remain deliberately excluded.
-        current_workspace = (await _api_session_dirs_async()).workspace.key
+        if scope is None:
+            scope = await asyncio.to_thread(_known_workspace_keys)
         sqlite_data: dict[uuid.UUID, _RestoredThreadInfo] = {}
         bindings: dict[str, tuple[str, str | None]] = {}
-        db_path = str(get_db_path())
+        # Off the event loop: get_db_path creates the folder, which blockbuster
+        # refuses on the loop when a project is registered while serving.
+        db_path = str(await asyncio.to_thread(get_db_path))
         async with aiosqlite.connect(db_path, timeout=30.0) as conn:
             # No checkpoints table (fresh DB) → rows stays empty, but the
             # ghost-removal pass below must still run: every UUID entry the
@@ -2021,7 +2033,7 @@ async def _restore_webui_threads_to_global_store() -> bool:
                 if restored_graph_id is None:
                     continue
                 dirs = stored_dirs[binding]
-                if dirs is None or dirs.workspace.key != current_workspace:
+                if dirs is None or dirs.workspace.key not in scope:
                     continue
                 stored = dirs.metadata()
                 sqlite_data[thread_uuid] = _RestoredThreadInfo(
@@ -2042,17 +2054,20 @@ async def _restore_webui_threads_to_global_store() -> bool:
                     pass
             return datetime.now(UTC)
 
-        # Drop stale registry entries: UUID entries outside the scoped restore
-        # set either point at missing state or another workspace's state.
+        # Drop registry entries whose threads have no checkpoints the restore
+        # reads (history deleted outside the server, never-run empty threads,
+        # and memory-worker threads, which it skips).
         # Slice assignment mutates the live registry list.
         store_threads: list[dict[str, Any]] = GLOBAL_STORE.get("threads", [])
         before = len(store_threads)
-        store_threads[:] = [
-            entry
-            for entry in store_threads
-            if (tid := _to_uuid_safe(entry.get("thread_id"))) is None
-            or tid in sqlite_data
-        ]
+        if remove:
+            with_checkpoints = {_to_uuid_safe(row[0]) for row in rows}
+            store_threads[:] = [
+                entry
+                for entry in store_threads
+                if (tid := _to_uuid_safe(entry.get("thread_id"))) is None
+                or tid in with_checkpoints
+            ]
         removed = before - len(store_threads)
 
         # Normalize surviving .pckl-loaded entries in place.
