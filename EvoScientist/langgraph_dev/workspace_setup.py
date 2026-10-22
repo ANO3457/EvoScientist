@@ -3,8 +3,8 @@
 Registration (``POST /api/workspaces``) is a setup barrier: the project's
 threads are restored and its assistants created, and only then is it
 recorded as registered, which is what the factories serve while its folder
-exists. Every
-step can run again, so registering a registered project repeats them. The
+exists. Every step can run again; the restore runs once per project and
+server process. The
 server's start sets every registered project up again: a fresh runtime store
 has none of their assistants. Graphs are built when first needed; the chat
 graph, which reads use, starts building in the background. Setup runs inside
@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from .. import sessions
 from ..paths import SessionDirs, Workspace
 from ..sessions import AGENT_NAME, restore_workspace_threads
 from . import assistants, registry
@@ -84,11 +85,17 @@ async def register_workspace(dirs: SessionDirs) -> None:
     """Set *dirs*' project up and record it as registered; the caller holds
     :func:`registration_lock`.
 
+    A project's threads are restored once per server process, at its start
+    or at the project's first registration, so registering it again only
+    checks its folder and assistants: clients register their project at every
+    start.
+
     Raises :class:`FolderMissingError` when the project's folder does not
     exist, and ``RuntimeError`` when its threads cannot be restored or its
     assistants created; a project that was not registered then stays so.
     """
-    await _set_up(dirs.workspace, restore=True)
+    restored = dirs.workspace.key in sessions.RESTORED_WORKSPACES
+    await _set_up(dirs.workspace, restore=not restored)
     warm_up(dirs.workspace)
 
 

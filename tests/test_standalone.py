@@ -71,6 +71,26 @@ def test_ensure_dev_server_spawns_on_server_backend(monkeypatch, tmp_path):
     assert ensure_calls[0]["backend"] == "langgraph_server"
 
 
+def test_ensure_dev_server_unusable_server_exits(monkeypatch, tmp_path):
+    import EvoScientist.langgraph_dev.manager as manager_mod
+    from EvoScientist.langgraph_dev.registration import OlderServerError
+
+    config, _calls = _patch_manager(
+        monkeypatch, gateway_backend="langgraph_server", default_workdir=str(tmp_path)
+    )
+
+    def older(_cfg, *, workspace_dir, backend=None):
+        raise OlderServerError()
+
+    monkeypatch.setattr(manager_mod, "ensure_langgraph_dev", older)
+
+    with pytest.raises(SystemExit) as exited:
+        standalone._ensure_standalone_dev_server(
+            config, workspace_dir=str(tmp_path), backend="langgraph_server"
+        )
+    assert exited.value.code == 1
+
+
 def test_ensure_dev_server_noop_on_local_backend(monkeypatch, tmp_path):
     config, ensure_calls = _patch_manager(
         monkeypatch, gateway_backend="local", default_workdir=str(tmp_path)

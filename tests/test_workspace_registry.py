@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from EvoScientist import local_secret, paths
+from EvoScientist import local_secret, paths, sessions
 from EvoScientist.langgraph_dev import (
     factories,
     registry,
@@ -71,6 +71,7 @@ def setup_calls(monkeypatch) -> list[tuple]:
 
     async def restore(key):
         calls.append(("restore", key))
+        sessions.RESTORED_WORKSPACES.add(key)
         return True
 
     async def ensure(workspace):
@@ -125,15 +126,50 @@ async def test_register_workspace_failed_setup_leaves_project_unregistered(
     assert ("warm up", workspace.key) not in setup_calls
 
 
+async def test_register_workspace_again_skips_restore(projects, setup_calls, workspace):
+    """Clients register their project at every start: its threads were
+    restored already, so only its folder and assistants are checked."""
+    await workspace_setup.register_workspace(SessionDirs(workspace))
+    setup_calls.clear()
+
+    await workspace_setup.register_workspace(SessionDirs(workspace))
+
+    assert setup_calls == [
+        ("assistants", workspace.key),
+        ("warm up", workspace.key),
+    ]
+
+
+async def test_register_workspace_restores_registered_project_not_restored(
+    projects, setup_calls, workspace
+):
+    """The restore at the server's start failed: the next registration
+    restores the project's threads."""
+    projects.set_registered(workspace.key, True)
+
+    await workspace_setup.register_workspace(SessionDirs(workspace))
+
+    assert setup_calls[0] == ("restore", workspace.key)
+
+
+@pytest.mark.parametrize("failing", ["restore", "assistants"])
 async def test_register_workspace_failure_keeps_registered_project(
-    projects, setup_calls, monkeypatch, workspace
+    projects, setup_calls, monkeypatch, workspace, failing
 ):
     projects.set_registered(workspace.key, True)
 
     async def restore_fails(_key):
         return False
 
-    monkeypatch.setattr(workspace_setup, "restore_workspace_threads", restore_fails)
+    async def assistants_fail(_workspace):
+        raise RuntimeError("store unavailable")
+
+    if failing == "restore":
+        monkeypatch.setattr(workspace_setup, "restore_workspace_threads", restore_fails)
+    else:
+        monkeypatch.setattr(
+            workspace_setup.assistants, "ensure_workspace_assistants", assistants_fail
+        )
     with pytest.raises(RuntimeError):
         await workspace_setup.register_workspace(SessionDirs(workspace))
 
@@ -585,8 +621,6 @@ async def test_registration_restore_runs_off_event_loop(runtime_store, workspace
     blocking calls on the event loop."""
     from blockbuster import BlockBuster
 
-    from EvoScientist import sessions
-
     blocker = BlockBuster(scanned_modules=[sessions])
     blocker.activate()
     try:
@@ -594,3 +628,4 @@ async def test_registration_restore_runs_off_event_loop(runtime_store, workspace
     finally:
         blocker.deactivate()
     assert restored
+    assert workspace.key in sessions.RESTORED_WORKSPACES

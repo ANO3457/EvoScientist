@@ -42,7 +42,11 @@ from EvoScientist.config import get_effective_config
 from EvoScientist.langgraph_dev import server_home, workspace_setup
 from EvoScientist.langgraph_dev.boundary import BOUNDARY_ENV, BrowserBoundary, Trust
 from EvoScientist.llm.models import list_model_picker_entries
-from EvoScientist.local_secret import load_local_secret, require_local_secret
+from EvoScientist.local_secret import (
+    instance_id,
+    load_local_secret,
+    require_local_secret,
+)
 
 if TYPE_CHECKING:
     from EvoScientist.paths import Workspace
@@ -446,6 +450,13 @@ async def post_settings_test_key(request: Request) -> JSONResponse:
     return JSONResponse(payload, status_code=status)
 
 
+async def get_instance(_request: Request) -> JSONResponse:
+    """The public name of this server's local secret
+    (:func:`~EvoScientist.local_secret.instance_id`), so a client can check
+    the server holds its secret before sending it."""
+    return JSONResponse({"instance": instance_id()})
+
+
 async def verify_local_secret(request: Request) -> Response:
     """``204`` when the request carries the local secret, ``403`` otherwise, so
     a client can check the value it read."""
@@ -491,6 +502,7 @@ def _build_app() -> Starlette:
             Route("/api/workspaces", list_workspaces, methods=["GET"]),
             Route("/api/workspaces", register_workspace, methods=["POST"]),
             Route("/api/workspaces", unregister_workspace, methods=["DELETE"]),
+            Route("/api/instance", get_instance, methods=["GET"]),
             Route("/api/local-secret/verify", verify_local_secret, methods=["GET"]),
             Route("/api/settings", get_settings, methods=["GET"]),
             Route("/api/settings", patch_settings, methods=["PATCH"]),

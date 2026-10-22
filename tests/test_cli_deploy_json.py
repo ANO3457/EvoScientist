@@ -1135,6 +1135,8 @@ def _spawn_child(tmp_path, *, grandchild: bool = False):
         "m._server_config_fingerprint = lambda _c: 'fp'\n"
         "m.start_langgraph_dev = lambda **k: P()\n"
         "m.stop_langgraph_dev = lambda p=None: print('stopped backend', file=sys.stderr)\n"
+        "from EvoScientist.langgraph_dev import registration as r\n"
+        "r.register_folder = lambda *a, **k: None\n"
         + (_GRANDCHILD if grandchild else "")
         + "from EvoScientist.deploy import json_mode\n"
         "sys.exit(json_mode.run_json(workdir=None, port=None, host=None,\n"

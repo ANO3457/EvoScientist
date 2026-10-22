@@ -262,32 +262,29 @@ def _ensure_standalone_dev_server(
     console/typer UI, progress goes to the log.
 
     Called synchronously before the asyncio loop starts (like serve), so the
-    cold-start poll never blocks the channel event loop. Unlike serve, there is
-    no console to render serve's red mismatch banner + ``typer.Exit``: a
-    workspace mismatch from :func:`ensure_langgraph_dev` is logged as
-    a single error line and re-raised to abort startup; a generic start failure
-    does not raise here — ``ensure_langgraph_dev`` leaves the dev server
-    unavailable, and ``create_runtime_gateways_for_config`` then falls back to the
-    in-process gateway for the run. serve's autoskill-schedule reconciliation and
+    cold-start poll never blocks the channel event loop. A server this runner
+    cannot use (:class:`ServerUnusableError`) is logged as one error line and
+    stops startup with exit code 1; a generic start failure does not raise
+    here — ``ensure_langgraph_dev`` leaves the dev server unavailable, and
+    ``create_runtime_gateways_for_config`` then falls back to the in-process
+    gateway for the run. serve's autoskill-schedule reconciliation and
     config-drift hint are intentionally not mirrored here (no console, and
     channels do not reconcile schedules).
     """
     if backend != "langgraph_server":
         return
 
-    import os
-
-    from ..langgraph_dev.manager import WorkspaceMismatchError, ensure_langgraph_dev
+    from ..langgraph_dev.manager import ensure_langgraph_dev
+    from ..langgraph_dev.registration import ServerUnusableError
     from ..paths import ensure_dirs
 
-    os.makedirs(workspace_dir, exist_ok=True)
     ensure_dirs()
     logger.info("Starting background agent server (langgraph dev)...")
     try:
         ensure_langgraph_dev(config, workspace_dir=workspace_dir, backend=backend)
-    except WorkspaceMismatchError as exc:
+    except ServerUnusableError as exc:
         logger.error("Cannot start server-backed standalone channel: %s", exc)
-        raise
+        raise SystemExit(1) from exc
 
 
 def _ensure_ccproxy(config: Any) -> None:
@@ -354,6 +351,10 @@ def run_standalone(
             get_effective_config,
             resolve_gateway_backend,
         )
+        from ..langgraph_dev.registration import (
+            ServerUnusableError,
+            prepare_workdir,
+        )
         from ..paths import start_workspace_path
 
         config = get_effective_config()
@@ -372,6 +373,11 @@ def run_standalone(
         backend = resolve_gateway_backend(config, GatewaySurface.STANDALONE)
         # The agent serves ``default_workdir``, else the current directory.
         ws_path = start_workspace_path(default_workdir=config.default_workdir)
+        try:
+            prepare_workdir(ws_path)
+        except ServerUnusableError as exc:
+            logger.error("%s", exc)
+            raise SystemExit(1) from exc
         workspace = Workspace(ws_path)
         _ensure_standalone_dev_server(
             config, workspace_dir=str(workspace.root), backend=backend

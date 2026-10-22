@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer  # type: ignore[import-untyped]
+from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
@@ -114,14 +115,19 @@ def deploy(
     _require_chatgpt_sign_in(config, interactive=False)
 
     # 2. Resolve workspace (CLI > config.default_workdir > cwd)
-    from ..paths import start_workspace_path
+    from ..cli.commands import _prepare_workdir_or_exit
+    from ..langgraph_dev.registration import (
+        RegistrationError,
+        ServerUnusableError,
+        register_folder,
+    )
+    from ..paths import Workspace, start_workspace_path
 
     ws = str(start_workspace_path(workdir, config.default_workdir))
-    # The server registers this project as it starts (start_langgraph_dev
-    # names it in EVOSCIENTIST_LAUNCHER_WORKSPACE). Ensure the dir exists; do
-    # NOT mutate the parent process's paths module state — the deploy parent
-    # has no in-process agent.
-    os.makedirs(ws, exist_ok=True)
+    # Create the folder (or refuse a known project's missing one); do NOT
+    # mutate the parent process's paths module state — the deploy parent has
+    # no in-process agent.
+    _prepare_workdir_or_exit(ws)
 
     # 3. Resolve port, then validate range so misconfigurations fail fast
     # with a clear message instead of an opaque socket error from langgraph
@@ -251,13 +257,19 @@ def deploy(
             console.print(f"[red]langgraph dev startup failed:[/red] {exc}")
             raise typer.Exit(1) from exc
 
+    # The server registered the project as it started, but logs a failure
+    # there and serves the others; registering it again reports it here.
+    try:
+        register_folder(Workspace(ws), url=_base_url(effective_port, effective_host))
+    except (ServerUnusableError, RegistrationError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+
     # start_langgraph_dev already health-polled before returning; if we got
     # here, the subprocess is up.
     console.print("[green]✓[/green] langgraph dev ready")
     # The agent is built inside the server, so its own hint lands in the
     # server log; show it here.
-    from rich.markup import escape
-
     from ..agent_shell import setup_hint
 
     hint = setup_hint()

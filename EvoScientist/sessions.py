@@ -1900,6 +1900,10 @@ def _known_workspace_keys() -> set[str]:
     return REGISTRY.known() | ({launcher.key} if launcher is not None else set())
 
 
+# The projects (workspace keys) whose threads this server process restored.
+RESTORED_WORKSPACES: set[str] = set()
+
+
 async def restore_workspace_threads(workspace_key: str) -> bool:
     """Add one project's threads to the runtime's registry (at its
     registration); see :func:`_restore_webui_threads_to_global_store`."""
@@ -2153,6 +2157,7 @@ async def _restore_webui_threads_to_global_store(
             exc_info=True,
         )
         return False
+    RESTORED_WORKSPACES.update(scope)
     return True
 
 

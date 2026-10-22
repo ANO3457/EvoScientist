@@ -46,7 +46,11 @@ from EvoScientist.config.settings import (
     env_origins,
     is_client_only,
 )
-from EvoScientist.langgraph_dev import boundary, server_home
+from EvoScientist.langgraph_dev import boundary, registration, server_home
+from EvoScientist.langgraph_dev.registration import (
+    RegistrationError,
+    ServerUnusableError,
+)
 
 if TYPE_CHECKING:
     from EvoScientist.deploy.backend_job import BackendJob
@@ -259,7 +263,7 @@ def _rotate_log_if_needed(log_path: Path) -> None:
 # langgraph devs started before this protocol existed.
 
 
-class WorkspaceMismatchError(RuntimeError):
+class WorkspaceMismatchError(ServerUnusableError):
     """Raised when a caller would reuse a langgraph dev whose recorded
     workspace differs from the workspace the caller requested.
 
@@ -1442,6 +1446,15 @@ def ensure_langgraph_dev(
       (we don't own it; warns if the workspace can't be verified)
     - not running: start subprocess, register atexit cleanup, return Popen
 
+    Either way the server then registers *workspace_dir*, after the locks
+    are released (the first registration of a project restores its threads).
+    A failed registration counts as the server being unavailable for this
+    session, like a failed start. Raises a
+    :class:`~EvoScientist.langgraph_dev.registration.ServerUnusableError`
+    when the server cannot be used for the project at all: another session's
+    server for another workspace, a server from an older EvoScientist, or a
+    known project whose folder is missing.
+
     Args:
         config: Active EvoScientistConfig.
         workspace_dir: Workspace to inherit on the subprocess. Set to the CLI's
@@ -1455,9 +1468,12 @@ def ensure_langgraph_dev(
             falls back to the global ``config.gateway_backend``. Determines
             whether the server is needed at all.
 
-    Errors during startup are logged but don't abort the CLI — the user can
-    still chat with sync sub-agents; only async sub-agent calls and EvoMemory
-    background workers will fail.
+    Errors during startup, and a failed registration of *workspace_dir*
+    (:class:`~EvoScientist.langgraph_dev.registration.RegistrationError`),
+    are logged but don't abort the CLI — the user can still chat with sync
+    sub-agents; only async sub-agent calls and EvoMemory background workers
+    will fail. A server this client cannot use raises
+    :class:`~EvoScientist.langgraph_dev.registration.ServerUnusableError`.
     """
     global _ASYNC_SUBAGENTS_AVAILABLE, CONFIG_DRIFT_SINCE_LAUNCH, AGENT_SHELL_DRIFT
     global SERVED_WORKSPACE
@@ -1484,7 +1500,7 @@ def ensure_langgraph_dev(
     try:
         with FileLock(str(RUNTIME.lock_file), timeout=_FILE_LOCK_TIMEOUT):
             with _LOCK:
-                return _ensure_langgraph_dev_locked(
+                proc = _ensure_langgraph_dev_locked(
                     config, workspace_dir, run_dir=run_dir
                 )
     except FileLockTimeout:
@@ -1497,6 +1513,23 @@ def ensure_langgraph_dev(
         )
         _ASYNC_SUBAGENTS_AVAILABLE = False
         return None
+    if _ASYNC_SUBAGENTS_AVAILABLE and workspace_dir is not None:
+        from .sdk import langgraph_dev_url
+
+        try:
+            registration.register_folder(
+                paths.Workspace(workspace_dir), url=langgraph_dev_url(config)
+            )
+        except (ServerUnusableError, RegistrationError) as exc:
+            _ASYNC_SUBAGENTS_AVAILABLE = False
+            SERVED_WORKSPACE = None
+            if isinstance(exc, ServerUnusableError):
+                raise
+            logger.warning(
+                "%s Falling back to sync sub-agent delegation for this session.",
+                exc,
+            )
+    return proc
 
 
 def _ensure_langgraph_dev_locked(

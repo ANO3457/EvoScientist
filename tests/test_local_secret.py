@@ -205,6 +205,15 @@ def test_verify_route_accepts_the_secret_from_the_file(server):
     assert response.status_code == 204
 
 
+def test_instance_route_names_the_secret_without_it(server):
+    value = _secret_file().read_text()
+
+    response = server.get("/api/instance")
+
+    assert response.json() == {"instance": local_secret.instance_of(value)}
+    assert value not in response.text
+
+
 @pytest.mark.parametrize("headers", [{}, {local_secret.HEADER: "wrong"}])
 def test_verify_route_refuses_without_the_secret(server, headers):
     """Also from 127.0.0.1: the address is no shortcut."""

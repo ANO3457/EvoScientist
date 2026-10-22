@@ -353,7 +353,7 @@ async def _new_session_dirs(
     ``--mode=run`` starts every session in a fresh run folder of the current
     workspace; daemon mode works in its root. The server moves first, so the
     new session's background work lands in its folder. Raises
-    ``WorkspaceMismatchError`` when another session holds the server: the
+    ``ServerUnusableError`` when the server cannot be used there: the
     session stays as it is and the fresh run folder is removed.
     """
     from .commands import _move_server_or_keep_session
@@ -934,7 +934,7 @@ def cmd_interactive(
                     # in the previous ones. Restart can take 10-15s behind a
                     # spinner, in a worker thread so the event loop keeps
                     # serving channel polls / MCP heartbeats. State changes
-                    # only after the move, so a WorkspaceMismatchError leaves
+                    # only after the move, so a ServerUnusableError leaves
                     # the session's folders and thread as they are, and command
                     # UIs (including channels) report the failure.
                     from .commands import _move_server_or_keep_session

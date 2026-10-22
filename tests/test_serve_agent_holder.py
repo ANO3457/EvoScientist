@@ -565,6 +565,38 @@ async def test_serve_resume_callback_preserves_state_when_server_refused():
     assert runtime.thread_id == "old-tid"
 
 
+async def test_serve_resume_callback_refuses_missing_project_before_agent_load(
+    tmp_path,
+):
+    """Loading the agent would recreate the folder empty."""
+    from EvoScientist.langgraph_dev.registration import ProjectFolderMissingError
+    from EvoScientist.langgraph_dev.registry import Registry
+
+    gone = Workspace(tmp_path / "gone")
+    Registry().set_registered(gone.key, True)
+    cfg = _config()
+    old_agent = _agent("old-agent")
+    state = _runtime_state(
+        agent=old_agent,
+        thread_id="old-tid",
+        dirs=SessionDirs(Workspace(tmp_path)),
+        config=cfg,
+    )
+    runtime = ChannelRuntime(agent=old_agent, thread_id="old-tid")
+    cb = _make_serve_handle_session_resume_cb(state, runtime, config=cfg)
+
+    with (
+        patch("EvoScientist.cli.commands._load_agent") as load_agent,
+        pytest.raises(ProjectFolderMissingError),
+    ):
+        await cb("new-tid", SessionDirs(gone))
+
+    load_agent.assert_not_called()
+    assert not gone.root.exists()
+    assert state.thread_id == "old-tid"
+    assert runtime.agent is old_agent
+
+
 async def test_serve_resume_callback_load_failure_does_not_sync_or_adopt():
     cfg = _config()
     old_agent = _agent("old-agent")

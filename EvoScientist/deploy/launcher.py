@@ -443,6 +443,7 @@ class WebUILauncher:
                 if decision.action == "start":
                     self._start_backend()
             self._raise_if_stopped()
+            self._register()
 
             # Front-end port: a non-fatal warning (node will surface a hard
             # bind failure if it actually can't listen).
@@ -461,6 +462,11 @@ class WebUILauncher:
             raise
 
         return self._result()
+
+    def _register(self) -> None:
+        """Register the workspace with the backend this launch started or
+        reuses."""
+        register_launch_folder(self._cfg.workspace_dir, url=self.backend_url)
 
     def _raise_if_stopped(self) -> None:
         """Abort startup if ``stop()`` fired on another thread mid-boot."""
@@ -959,6 +965,37 @@ def _poll_ready(
 # --------------------------------------------------------------------------- #
 # Launcher-config resolution (shared by every front-end)
 # --------------------------------------------------------------------------- #
+def prepare_launch_folder(ws: str) -> None:
+    """:func:`~EvoScientist.langgraph_dev.registration.prepare_workdir`, a
+    refusal raised as ``folder_missing``."""
+    from ..langgraph_dev.registration import ProjectFolderMissingError, prepare_workdir
+
+    try:
+        prepare_workdir(ws)
+    except ProjectFolderMissingError as exc:
+        raise LauncherError(
+            "folder_missing", str(exc), fields={"workspace": ws}
+        ) from exc
+
+
+def register_launch_folder(ws: str, *, url: str) -> None:
+    """Register *ws* with the backend at *url*; a failure raised as
+    ``folder_missing``, ``server_outdated`` or ``registration_failed``."""
+    from ..langgraph_dev import registration
+    from ..paths import Workspace
+
+    try:
+        registration.register_folder(Workspace(ws), url=url)
+    except registration.ProjectFolderMissingError as exc:
+        raise LauncherError(
+            "folder_missing", str(exc), fields={"workspace": ws}
+        ) from exc
+    except registration.OlderServerError as exc:
+        raise LauncherError("server_outdated", str(exc)) from exc
+    except registration.RegistrationError as exc:
+        raise LauncherError("registration_failed", str(exc)) from exc
+
+
 def build_launcher_config(
     config: Any,
     workspace_dir: str | None,
@@ -972,7 +1009,7 @@ def build_launcher_config(
     ws = str(
         start_workspace_path(workspace_dir, getattr(config, "default_workdir", ""))
     )
-    os.makedirs(ws, exist_ok=True)
+    prepare_launch_folder(ws)
 
     backend_port = int(getattr(config, "langgraph_dev_port", _DEFAULT_PORT))
     webui_port = int(getattr(config, "webui_port", _DEFAULT_WEBUI_PORT))

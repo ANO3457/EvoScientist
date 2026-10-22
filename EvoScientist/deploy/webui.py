@@ -97,7 +97,11 @@ def run_webui(config: Any, workspace_dir: str | None = None) -> None:
 
     apply_config_to_env(config)
 
-    cfg = build_launcher_config(config, workspace_dir)
+    try:
+        cfg = build_launcher_config(config, workspace_dir)
+    except LauncherError as exc:
+        _render_launcher_error(exc)
+        raise typer.Exit(1) from exc
 
     # Port sanity — a CLI concern, so it lives here rather than in the core.
     for label, p in (("langgraph dev", cfg.backend_port), ("WebUI", cfg.webui_port)):

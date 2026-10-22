@@ -400,6 +400,16 @@ def _isolate_user_dirs(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_registration(monkeypatch):
+    """Clients register their project with the server they use; tests that
+    fake a running server would otherwise send the request. A test of the
+    registration itself imports ``register_folder`` at module level."""
+    from EvoScientist.langgraph_dev import registration
+
+    monkeypatch.setattr(registration, "register_folder", lambda *_a, **_k: None)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_dotenv_record(monkeypatch):
     """The ``.env`` keys a merge warned about are per test."""
     from EvoScientist.config import settings
@@ -409,8 +419,9 @@ def _fresh_dotenv_record(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_registry(monkeypatch):
-    """Each test reads the project registry from its own data folder, and
-    registers projects with a lock of its own event loop."""
+    """Each test reads the project registry from its own data folder,
+    registers projects with a lock of its own event loop, and starts with no
+    threads restored."""
     import sys
 
     module = sys.modules.get("EvoScientist.langgraph_dev.registry")
@@ -420,6 +431,9 @@ def _fresh_registry(monkeypatch):
     if module is not None:
         monkeypatch.setattr(module, "_lock", None)
         monkeypatch.setattr(module, "_warm_lock", None)
+    module = sys.modules.get("EvoScientist.sessions")
+    if module is not None:
+        monkeypatch.setattr(module, "RESTORED_WORKSPACES", set())
 
 
 @pytest.fixture

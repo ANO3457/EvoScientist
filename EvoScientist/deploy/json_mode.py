@@ -38,6 +38,12 @@ Events:
   - ``backend_exited``: ``exit_code`` and ``log_file`` when the owned process
     ended; ``url`` when an owned backend stopped listening or an attached one
     stopped answering.
+  - ``folder_missing``: ``workspace``, a folder EvoScientist knows as a
+    project whose folder is gone (it is not recreated).
+  - ``server_outdated``: empty; the running backend predates the project
+    registry, so it has to be stopped first.
+  - ``registration_failed``: empty; the backend did not register the
+    workspace.
   - ``internal_error``: ``type``, the exception's class; or ``launcher_code``
     for a backend-decision error this mode has no code for.
 
@@ -75,6 +81,7 @@ How a program runs the command:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -83,6 +90,7 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Iterator
 from typing import Any
 
 from ..langgraph_dev.assistants import chat_assistant_id
@@ -102,6 +110,9 @@ ERROR_CODES = frozenset(
         "backend_start_failed",
         "sign_in_required",
         "backend_exited",
+        "folder_missing",
+        "server_outdated",
+        "registration_failed",
         "internal_error",
     }
 )
@@ -110,6 +121,9 @@ _LAUNCHER_CODES = {
     "port_conflict": "port_conflict",
     "sidecar_port_mismatch": "port_conflict",
     "workspace_mismatch": "workspace_conflict",
+    "folder_missing": "folder_missing",
+    "server_outdated": "server_outdated",
+    "registration_failed": "registration_failed",
 }
 
 # The health check runs this often; this many failures in a row mean the
@@ -145,6 +159,25 @@ class _Failure(Exception):
             "message": self.message,
             "detail": self.detail,
         }
+
+
+@contextlib.contextmanager
+def _launcher_failures() -> Iterator[None]:
+    """Raise a :class:`~EvoScientist.deploy.launcher.LauncherError` as the
+    matching :class:`_Failure`; a code without one is ``internal_error``."""
+    from .launcher import LauncherError
+
+    try:
+        yield
+    except LauncherError as exc:
+        detail = dict(exc.fields)
+        if exc.detail:
+            detail["hint"] = exc.detail
+        code = _LAUNCHER_CODES.get(exc.code)
+        if code is None:
+            detail["launcher_code"] = exc.code
+            code = "internal_error"
+        raise _Failure(code, exc.message, detail) from exc
 
 
 class _Events:
@@ -258,13 +291,14 @@ class _Run:
         from ..agent_shell import server_setup_hint, setup_hint
         from ..langgraph_dev import manager as lgm
         from . import server
-        from .launcher import BackendTarget
+        from .launcher import BackendTarget, prepare_launch_folder
 
         config = server._load_config(debug, host, port)
         _check_sign_in(config)
 
         ws = str(paths.start_workspace_path(workdir, config.default_workdir))
-        os.makedirs(ws, exist_ok=True)
+        with _launcher_failures():
+            prepare_launch_folder(ws)
         self.port = server._resolve_port(port, config)
         if not server._port_in_range(self.port):
             raise _Failure(
@@ -283,6 +317,7 @@ class _Run:
         # during the start: stop now, without the tunnel wait or ready.
         if decision is None or self.stop.is_set():
             return
+        self._register(ws)
         warnings = list(decision.warnings)
         public_url: str | None = None
         if decision.action == "reuse":
@@ -346,6 +381,14 @@ class _Run:
             fields["public_url"] = public_url
         self.events("ready", **fields)
 
+    def _register(self, ws: str) -> None:
+        """Register the workspace with the backend this command uses."""
+        from ..langgraph_dev import manager as lgm
+        from .launcher import register_launch_folder
+
+        with _launcher_failures():
+            register_launch_folder(ws, url=lgm._base_url(self.port, self.host))
+
     def _decide_and_start(self, target: Any, config: Any, ws: str, tunnel: bool) -> Any:
         """The backend decision, and the start it calls for, under the lock
         the TUI's ``ensure_langgraph_dev()`` takes.
@@ -358,24 +401,15 @@ class _Run:
         from filelock import FileLock
 
         from ..langgraph_dev import manager as lgm
-        from .launcher import LauncherError, _resolve_backend
+        from .launcher import _resolve_backend
 
         lgm.RUNTIME.pid_dir.mkdir(parents=True, exist_ok=True)
         lock = FileLock(str(lgm.RUNTIME.lock_file))
         if not self._acquire(lock, lgm._FILE_LOCK_TIMEOUT):
             return None
         try:
-            try:
+            with _launcher_failures():
                 decision = _resolve_backend(target, config, require_record=True)
-            except LauncherError as exc:
-                detail = dict(exc.fields)
-                if exc.detail:
-                    detail["hint"] = exc.detail
-                code = _LAUNCHER_CODES.get(exc.code)
-                if code is None:
-                    detail["launcher_code"] = exc.code
-                    code = "internal_error"
-                raise _Failure(code, exc.message, detail) from exc
             if decision.action == "start" and not self.stop.is_set():
                 self._start_backend(config, ws, tunnel)
             return decision

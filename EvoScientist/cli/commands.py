@@ -721,6 +721,18 @@ class CompactSummaryRenderable:
         yield render_compact_summary_panel(self.summary_text)
 
 
+def _prepare_workdir_or_exit(path: str | os.PathLike[str]) -> Path:
+    """:func:`~EvoScientist.langgraph_dev.registration.prepare_workdir`, or
+    ``typer.Exit(1)`` with its message for a known project's missing folder."""
+    from ..langgraph_dev.registration import ServerUnusableError, prepare_workdir
+
+    try:
+        return prepare_workdir(path)
+    except ServerUnusableError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+
+
 def _ensure_async_subagent_server(
     config: Any, *, dirs: SessionDirs, backend: str | None = None
 ) -> None:
@@ -735,20 +747,19 @@ def _ensure_async_subagent_server(
     surface's choice rather than re-reading the global flag. ``None`` keeps the
     global-read behavior.
 
-    Raises ``typer.Exit(1)`` (after surfacing a red error) when an
+    Raises ``typer.Exit(1)`` (after surfacing a red error) when the server
+    cannot be used for *dirs* (``ServerUnusableError``): e.g. an
     externally-managed langgraph dev is already running for a different
-    workspace — e.g., ``EvoSci deploy --workdir /A`` is up and the user
-    is starting ``EvoSci`` / ``EvoSci serve`` in /B. Continuing in that
-    state would route async sub-agent calls to a process pinned to /A
-    while the main agent runs in /B.
+    workspace, the server is from an older EvoScientist, or the project's
+    folder is gone.
     """
     from ..langgraph_dev.manager import (
         _DEFAULT_HOST,
-        WorkspaceMismatchError,
         _is_loopback_host,
         ensure_langgraph_dev,
         is_async_subagents_available,
     )
+    from ..langgraph_dev.registration import ServerUnusableError
 
     try:
         with console.status(
@@ -762,8 +773,8 @@ def _ensure_async_subagent_server(
                 backend=backend,
             )
             _reconcile_autoskill_schedule(config, workspace=dirs.workspace)
-    except WorkspaceMismatchError as exc:
-        console.print(f"[red]{exc}[/red]")
+    except ServerUnusableError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
         _remove_unused_run_dir(dirs.run_dir)
         raise typer.Exit(1) from exc
 
@@ -930,7 +941,7 @@ async def _sync_background_agent_server_workspace(
 
     ``ensure_langgraph_dev`` is intentionally always called: EvoMemory
     background workers require the server even when async subagents are disabled.
-    WorkspaceMismatchError is left for callers to handle according to their UI
+    ServerUnusableError is left for callers to handle according to their UI
     flow.
 
     ``backend`` is the calling surface's resolved gateway backend, forwarded so
@@ -984,8 +995,9 @@ async def _move_server_or_keep_session(
     synced to (``None`` when it was not started yet). Nothing happens when
     the two are the same.
 
-    Raises ``WorkspaceMismatchError`` when another EvoSci session holds the
-    server for other folders: the caller keeps its session as it is, and the
+    Raises ``ServerUnusableError`` when the server cannot be used for
+    *target* (another EvoSci session holds it for other folders, or
+    *target*'s project folder is gone): the caller keeps its session as it is, and the
     run folder made for *target* (``new_run_dir``) is removed. Returns False
     when the move failed otherwise: the session can go to *target*, but
     async sub-agents and EvoMemory workers may be unavailable.
@@ -993,13 +1005,21 @@ async def _move_server_or_keep_session(
     if target == current:
         return True
 
-    from ..langgraph_dev.manager import WorkspaceMismatchError
+    import asyncio
+
+    from ..langgraph_dev.registration import (
+        ServerUnusableError,
+        refuse_missing_project,
+    )
 
     try:
+        # Whatever the backend: a known project whose folder is gone is
+        # refused rather than recreated empty.
+        await asyncio.to_thread(refuse_missing_project, target.workspace.root)
         await _sync_background_agent_server_workspace(
             config, dirs=target, backend=backend, status_message=status_message
         )
-    except WorkspaceMismatchError:
+    except ServerUnusableError:
         if new_run_dir:
             _remove_unused_run_dir(target.run_dir)
         raise
@@ -1029,9 +1049,9 @@ async def _restore_thread_dirs(
     *dirs*, the folders the session started in. *served* are the folders the
     server was started for, ``None`` when it was not started yet. A run
     folder made for *dirs* that the thread does not use is removed. Raises
-    ``typer.Exit(1)`` when another session holds the server.
+    ``typer.Exit(1)`` when the server cannot be used there.
     """
-    from ..langgraph_dev.manager import WorkspaceMismatchError
+    from ..langgraph_dev.registration import ServerUnusableError
 
     metadata = await graph_gateway.get_thread_metadata(thread_id) or {}
     restored = (
@@ -1042,9 +1062,9 @@ async def _restore_thread_dirs(
         synced = await _move_server_or_keep_session(
             config, target=restored, current=served, backend=backend
         )
-    except WorkspaceMismatchError as exc:
+    except ServerUnusableError as exc:
         _remove_unused_run_dir(dirs.run_dir)
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
     if not synced:
         console.print(
@@ -1496,6 +1516,13 @@ async def _apply_serve_resume_state(
                 "Cannot resume into a different workspace in serve mode without "
                 "the effective configuration."
             )
+        from ..langgraph_dev.registration import (
+            ServerUnusableError,
+            refuse_missing_project,
+        )
+
+        # Before the agent load, which recreates the folder.
+        await asyncio.to_thread(refuse_missing_project, new_dirs.workspace.root)
         new_agent = await asyncio.to_thread(
             _load_agent,
             work_dir=str(new_dirs.work_dir),
@@ -1512,8 +1539,6 @@ async def _apply_serve_resume_state(
             if thread_changed:
                 await leave_thread(proactive)
             await asyncio.to_thread(_serve_proactive_call, proactive.stop)
-        from ..langgraph_dev.manager import WorkspaceMismatchError
-
         try:
             moved = await _move_server_or_keep_session(
                 effective_config,
@@ -1521,7 +1546,7 @@ async def _apply_serve_resume_state(
                 current=runtime_state.dirs,
                 backend=runtime_state.gateway_backend,
             )
-        except WorkspaceMismatchError:
+        except ServerUnusableError:
             if proactive is not None and moves_workspace:
                 if left is not None:
                     # The session stays where it was: arm again what serve paused.
@@ -2201,8 +2226,9 @@ def serve(
         raise typer.Exit(1)
 
     effective_channel_thinking = config.channel_send_thinking and (not no_thinking)
-    ws_path = start_workspace_path(workdir, config.default_workdir)
-    os.makedirs(ws_path, exist_ok=True)
+    ws_path = _prepare_workdir_or_exit(
+        start_workspace_path(workdir, config.default_workdir)
+    )
     dirs = SessionDirs(Workspace(ws_path))
     ensure_dirs()
 
@@ -3217,11 +3243,11 @@ def _main_callback(
         workspace_root = start_workspace_path()
     elif workdir:
         workspace_root = start_workspace_path(workdir)
-        os.makedirs(workspace_root, exist_ok=True)
     else:
         workspace_root = start_workspace_path(default_workdir=config.default_workdir)
         effective_mode = mode or config.default_mode
-    workspace = Workspace(workspace_root)
+    # Before run mode's ``runs/`` folder, which would recreate a missing root.
+    workspace = Workspace(_prepare_workdir_or_exit(workspace_root))
 
     # Ensure memory and skills subdirs exist in workspace
     ensure_dirs()

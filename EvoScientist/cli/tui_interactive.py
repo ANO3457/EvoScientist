@@ -960,10 +960,11 @@ def run_textual_interactive(
 
             Runs ``_move_server_or_keep_session`` behind a live timer widget
             (like /compact) showing *message*, so the Textual event loop keeps
-            refreshing the UI during the up-to-60s wait.
+            refreshing the UI during the wait (a start, then the project's
+            registration).
 
-            Raises ``WorkspaceMismatchError`` when another EvoSci process owns
-            the server for other folders, so the caller leaves the session as
+            Raises ``ServerUnusableError`` when the server cannot be used for
+            *dirs*, so the caller leaves the session as
             it is and command UIs (including channels) report the failure.
             Returns False when the sync failed otherwise: the session can
             continue locally, but background work may be unavailable.
@@ -4496,15 +4497,16 @@ def run_textual_interactive(
                     stored = SessionDirs.from_stored(
                         meta.get("workspace_dir"), meta.get("run_dir")
                     )
-                    mismatch_aborted = False
+                    refusal: str | None = None
                     if stored is not None:
                         effective_dirs = stored
                         # Move the background agent server to the resumed
                         # folders BEFORE the Textual app takes over the
                         # terminal, so background workers and deployed
                         # sub-agents don't work in the launch folders.
-                        from ..langgraph_dev.manager import WorkspaceMismatchError
-                        from ..stream.console import console as _resume_console
+                        from ..langgraph_dev.registration import (
+                            ServerUnusableError,
+                        )
                         from .commands import _move_server_or_keep_session
 
                         try:
@@ -4519,25 +4521,17 @@ def run_textual_interactive(
                                     "resumed the session, but async subagents "
                                     "and EvoMemory workers may be unavailable."
                                 )
-                        except WorkspaceMismatchError as _ws_mismatch_exc:
-                            # Surface the user-actionable message via the
-                            # Rich console (TUI hasn't taken over the terminal
-                            # yet) and abort the resume so the TUI doesn't
-                            # start up pointing at the conflicting workspace
-                            # with background work routed at a server pinned to
-                            # a different workspace.
-                            _resume_console.print(f"[red]{_ws_mismatch_exc}[/red]")
-                            mismatch_aborted = True
-                    if mismatch_aborted:
-                        # Revert the workspace mutation and fall through to the
-                        # ``effective_thread_id is None`` branch below, which
-                        # generates a fresh thread in the original launch
-                        # workspace. User keeps the TUI session; the requested
+                        except ServerUnusableError as exc:
+                            refusal = str(exc)
+                    if refusal is not None:
+                        # Fall through to the ``effective_thread_id is None``
+                        # branch below, which generates a fresh thread in the
+                        # original launch workspace: the requested
                         # ``--thread-id`` resume is what we refuse.
                         effective_dirs = dirs
                         resume_warning = (
-                            f"Resume of thread '{thread_id}' aborted due to "
-                            "workspace conflict. Starting new session."
+                            f"Resume of thread '{thread_id}' refused: {refusal} "
+                            "Starting a new session."
                         )
                     else:
                         effective_thread_id = resolution.thread_id

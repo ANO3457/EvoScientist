@@ -385,6 +385,49 @@ def test_start_passes_backend_allowed_origins(monkeypatch):
     assert started["allowed_origins"] == "https://smith.langchain.com"
 
 
+def test_start_registers_workspace_before_front_end(monkeypatch):
+    from EvoScientist.langgraph_dev import registration
+
+    _patch_for_start(monkeypatch, set())
+    events: list = []
+    monkeypatch.setattr(
+        registration,
+        "register_folder",
+        lambda workspace, *, url: events.append(("register", workspace.root, url)),
+    )
+
+    class _RecordingRunner(_FakeRunner):
+        def start(self, cfg, env):
+            events.append(("front end",))
+            return _FakeProc()
+
+    lm.WebUILauncher(object(), _cfg(), _RecordingRunner()).start()
+
+    assert events[0][:2] == ("register", Path("/tmp/wsA"))
+    assert events[1] == ("front end",)
+
+
+def test_start_registration_failure_tears_the_backend_down(monkeypatch):
+    from EvoScientist.langgraph_dev import registration
+
+    _patch_for_start(monkeypatch, set())
+    stopped: list = []
+    monkeypatch.setattr(
+        lgm, "stop_langgraph_dev", lambda proc=None: stopped.append(proc)
+    )
+
+    def fail(_workspace, *, url):
+        raise registration.RegistrationError("setup failed")
+
+    monkeypatch.setattr(registration, "register_folder", fail)
+    launcher = lm.WebUILauncher(object(), _cfg(keepalive=False), _FakeRunner())
+
+    with pytest.raises(lm.LauncherError) as ei:
+        launcher.start()
+    assert ei.value.code == "registration_failed"
+    assert len(stopped) == 1
+
+
 def test_start_failure_after_backend_start_tears_the_backend_down(monkeypatch):
     """A front-end failure after the backend was spawned must not leave that
     backend running: start()'s error path tears down what it started."""
