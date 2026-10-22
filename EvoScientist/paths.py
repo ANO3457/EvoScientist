@@ -301,6 +301,11 @@ def _config_dir() -> Path:
     ) / "evoscientist"
 
 
+# Whether this process is the langgraph dev server (``start_langgraph_dev``
+# sets the variable). Read once, at import, and removed from the environment,
+# so the agent's commands and MCP servers do not take themselves for it.
+SERVER_PROCESS: bool = os.environ.pop("EVOSCIENTIST_SERVER_PROCESS", None) == "1"
+
 # Both folders are read once, when this module is imported: a workspace ``.env``
 # loaded later does not move them, and processes this one starts get them as
 # absolute paths (see ``dir_env``).
@@ -314,8 +319,8 @@ def dir_env(env: dict[str, str]) -> dict[str, str]:
     """Return *env* with this process's data and config folders, as absolute paths.
 
     For processes this one starts (the langgraph dev server, the WebUI): they
-    run in other folders and load their own ``.env``, so they get the folders
-    this process uses rather than resolving the variables again.
+    work in other folders, so they get the folders this process uses rather
+    than resolving the variables again.
     ``XDG_CONFIG_HOME`` is passed only if this process started with it: unset
     gives the same folder, and other programs the child runs (the agent's
     shell, MCP servers) may treat a set value differently from an unset one.
@@ -352,7 +357,9 @@ GLOBAL_MEMORIES_DIR: Path = _global_memories_dir()
 SERVER_HOME: Path = DATA_DIR / "server"
 
 
-# Memories dir: global by default, overridable via env var.
+# Memories dir: global by default, overridable via env var. Read once, at
+# import: a project ``.env`` does not move it (the ``.env`` reaches the CLI
+# only, and the CLI and the server must use one folder).
 # Supports both new (EVOSCIENTIST_MEMORIES_DIR) and old (EVOSCIENTIST_MEMORY_DIR) env vars.
 def _memories_dir_from_env() -> Path:
     return (
@@ -363,17 +370,6 @@ def _memories_dir_from_env() -> Path:
 
 
 MEMORIES_DIR: Path = _memories_dir_from_env()
-
-
-def reload_env_dirs() -> None:
-    """Re-read the memories-folder override from the environment.
-
-    ``paths`` is imported before ``get_effective_config()`` merges the
-    project ``.env`` into ``os.environ``, so entry points call this once
-    after loading their config to pick up an override set there.
-    """
-    global MEMORIES_DIR
-    MEMORIES_DIR = _memories_dir_from_env()
 
 
 # DEPRECATED(0.1.0): remove this migration helper and its call site below.

@@ -295,22 +295,6 @@ class TestProcessSessionDirs:
         assert process_session_dirs() == SessionDirs(Workspace(tmp_path), run)
 
 
-class TestReloadEnvDirs:
-    """An override merged into the environment after import (project .env)."""
-
-    def test_picks_up_a_late_memories_override(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("EVOSCIENTIST_MEMORY_DIR", raising=False)
-        monkeypatch.setenv("EVOSCIENTIST_MEMORIES_DIR", str(tmp_path / "mem"))
-        paths.reload_env_dirs()
-        assert paths.MEMORIES_DIR == tmp_path / "mem"
-
-    def test_falls_back_to_global_memories(self, monkeypatch):
-        monkeypatch.delenv("EVOSCIENTIST_MEMORIES_DIR", raising=False)
-        monkeypatch.delenv("EVOSCIENTIST_MEMORY_DIR", raising=False)
-        paths.reload_env_dirs()
-        assert paths.MEMORIES_DIR == paths.GLOBAL_MEMORIES_DIR
-
-
 class TestResolveVirtualPath:
     def test_absolute_virtual_path(self, tmp_path):
         assert (
@@ -539,3 +523,22 @@ class TestSharedDirFromEnv:
         monkeypatch.setattr(paths, "Workspace", unreadable)
         paths.launcher_workspace.cache_clear()
         assert paths.launcher_workspace() is None
+
+
+def test_server_marker_read_once_and_removed(tmp_path):
+    """The agent's commands and MCP servers must not take themselves for the
+    server."""
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import os, EvoScientist.paths as p; "
+        "print(p.SERVER_PROCESS, 'EVOSCIENTIST_SERVER_PROCESS' in os.environ)"
+    )
+    env = {**os.environ, "HOME": str(tmp_path), "EVOSCIENTIST_SERVER_PROCESS": "1"}
+    env.pop("EVOSCIENTIST_DATA_DIR", None)
+    out = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True
+    )
+    assert out.stdout.split() == ["True", "False"], out.stderr

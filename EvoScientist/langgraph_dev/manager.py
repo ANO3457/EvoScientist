@@ -42,7 +42,9 @@ from EvoScientist.config.settings import (
     ENV_ORIGINS_VAR,
     _same_value,
     config_value_origin,
+    env_origin,
     env_origins,
+    is_client_only,
 )
 from EvoScientist.langgraph_dev import boundary, server_home
 
@@ -424,11 +426,11 @@ _TUNNEL_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+\.trycloudflare\.com")
 #   ``ensure_langgraph_dev`` confirms the subprocess is healthy. Stays False
 #   on startup failure so ``_maybe_swap_async_subagents`` can fall back to
 #   in-process sync delegation instead of routing tool calls at a dead URL.
-# - langgraph dev subprocess: starts True via the
-#   ``EVOSCIENTIST_SERVER_PROCESS`` env var ``start_langgraph_dev`` sets.
-#   The served main agent runs inside the server, so http://localhost:{port}
-#   is always reachable for self-loop async sub-agent dispatch.
-_ASYNC_SUBAGENTS_AVAILABLE: bool = os.environ.get("EVOSCIENTIST_SERVER_PROCESS") == "1"
+# - langgraph dev subprocess: starts True (``paths.SERVER_PROCESS``, from the
+#   variable ``start_langgraph_dev`` sets). The served main agent runs inside
+#   the server, so http://localhost:{port} is always reachable for self-loop
+#   async sub-agent dispatch.
+_ASYNC_SUBAGENTS_AVAILABLE: bool = paths.SERVER_PROCESS
 
 
 def is_async_subagents_available() -> bool:
@@ -689,50 +691,10 @@ def _kill_owned_stale_process(port: int) -> bool:
     return True
 
 
-# Config fields that provably never reach the langgraph dev subprocess:
-# the channel stack + STT run in the CLI process, display/workspace/frontend
-# knobs shape the CLI itself, and keepalive is a lifecycle flag. Everything
-# NOT listed here counts toward the drift fingerprint, so a newly added
-# config field defaults to "affects the server" — the failure mode is a
-# spurious restart hint, never silent staleness.
 # Packaged sub-agent specs — consumed at graph build; module constant so
 # tests can redirect it.
 _SUBAGENTS_DIR = Path(__file__).resolve().parent.parent / "subagents"
 
-_FINGERPRINT_EXCLUDED_PREFIXES = (
-    "channel_",
-    "imessage_",
-    "telegram_",
-    "discord_",
-    "slack_",
-    "feishu_",
-    "wechat_",
-    "dingtalk_",
-    "email_",
-    "qq_",
-    "signal_",
-    "stt_",
-    "gateway_backend",
-)
-_FINGERPRINT_EXCLUDED_FIELDS = frozenset(
-    {
-        "require_mention",
-        "text_chunk_limit",
-        "allowed_channels",
-        "dm_policy",
-        "shared_webhook_port",
-        "show_thinking",
-        "ui_backend",
-        "log_level",
-        "default_mode",
-        "default_workdir",
-        "webui_port",
-        "webui_host",
-        "langgraph_dev_keepalive",
-        "shell_allow_list",
-        "mirror",
-    }
-)
 # Fields the server reads from config.yaml itself: no environment variable
 # carries them, so a command-line override (--auto-approve, --auto-mode, the
 # ask_user switch) never reaches it. The fingerprint takes them from the file
@@ -747,8 +709,9 @@ def _server_config_fingerprint(config: EvoScientistConfig) -> str:
     Deployed graphs read config once at import (``subagents/_factory.py``,
     ``EvoScientist.py``), so a keepalive server keeps serving those values
     until restarted. Iterates the full ``EvoScientistConfig`` field list
-    minus the explicit exclusion set above — a new config field counts
-    toward drift by default — and folds in ``mcp.yaml`` plus the packaged
+    minus the fields that never reach the server
+    (:func:`~EvoScientist.config.settings.is_client_only`) — a new config
+    field counts toward drift by default — and folds in ``mcp.yaml`` plus the packaged
     ``subagents/*.yaml``, which are consumed at graph build too. The
     EvoScientist version is part of it, so a server left running across an
     upgrade counts as drift as well. Secrets
@@ -764,9 +727,7 @@ def _server_config_fingerprint(config: EvoScientistConfig) -> str:
     parts = []
     for field in dataclass_fields(EvoScientistConfig):
         name = field.name
-        if name in _FINGERPRINT_EXCLUDED_FIELDS or name.startswith(
-            _FINGERPRINT_EXCLUDED_PREFIXES
-        ):
+        if is_client_only(name):
             continue
         source = file_config if name in _FINGERPRINT_FILE_FIELDS else config
         parts.append((name, str(getattr(source, name, None))))
@@ -928,14 +889,22 @@ def _packaged_langgraph_config() -> Path:
 # =============================================================================
 
 
+def _from_dotenv(env_key: str) -> bool:
+    """Whether this process's ``.env`` merge set *env_key*; the server gets
+    none of those."""
+    return (env_origin(env_key) or {}).get("source") == "dotenv"
+
+
 def _server_env_origins(port: str, host: str) -> dict:
     """This process's record of environment origins, plus the port and host
     :func:`start_langgraph_dev` always sets for the server.
 
-    A variable passed on unchanged keeps what is recorded for it: a ``.env``
-    source with its path, or no record for the user's own export.
+    A variable passed on unchanged keeps what is recorded for it, or no record
+    for the user's own export; a ``.env`` setting is not passed.
     """
-    origins = env_origins()
+    origins = {
+        key: origin for key, origin in env_origins().items() if not _from_dotenv(key)
+    }
     for env_key, field, value in (
         ("EVOSCIENTIST_LANGGRAPH_DEV_PORT", "langgraph_dev_port", port),
         ("EVOSCIENTIST_LANGGRAPH_DEV_HOST", "langgraph_dev_host", host),
@@ -1118,9 +1087,13 @@ def start_langgraph_dev(
     # absolute path since it works in another folder. A run names its run
     # folder itself. ``EVOSCIENTIST_WORKSPACE_DIR`` passes as inherited: it is
     # the user's ``default_workdir`` override (Docker sets it), which the
-    # settings API reports. It gets this process's data and config folders so
-    # both use the same files.
-    sub_env = paths.dir_env(os.environ)
+    # settings API reports. A project ``.env`` sets only this command's own
+    # settings, each only where the environment had none, so the server gets
+    # the environment without them. It gets this process's data and config
+    # folders so both use the same files.
+    sub_env = paths.dir_env(
+        {key: value for key, value in os.environ.items() if not _from_dotenv(key)}
+    )
     sub_env.pop("EVOSCIENTIST_RUN_DIR", None)
     sub_env[paths.LAUNCHER_WORKSPACE_ENV] = os.path.abspath(workspace_dir)
     sub_env["PYTHONIOENCODING"] = "utf-8"
@@ -1150,9 +1123,7 @@ def start_langgraph_dev(
     # the config file says — which desyncs from the bind port whenever
     # ``--port`` differs from the persisted ``langgraph_dev_port``, and
     # every async subagent launch fails with "All connection attempts failed".
-    # ``get_effective_config`` treats ``EVOSCIENTIST_*`` shell values as
-    # authoritative over any workspace ``.env`` (see its docstring), so a
-    # ``.env`` in the subprocess cwd cannot shadow the caller-resolved port.
+    # The server reads no ``.env``, so nothing shadows the caller-resolved port.
     sub_env["EVOSCIENTIST_LANGGRAPH_DEV_PORT"] = str(port)
     # Same reasoning for the bind interface: the deployed agent resolves its
     # self-dispatch URL from ``cfg.langgraph_dev_host``, so a host resolved by

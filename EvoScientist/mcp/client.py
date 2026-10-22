@@ -918,11 +918,11 @@ def _ensure_node_for_stdio(config: dict[str, Any]) -> None:
 
     Covers users who never ran ``EvoSci setup``. A failed install is logged and
     the server then fails to start as it would without Node. Never runs inside
-    ``langgraph dev`` (``EVOSCIENTIST_SERVER_PROCESS`` set): a download there would
+    ``langgraph dev`` (``paths.SERVER_PROCESS``): a download there would
     race the server's health deadline with its progress hidden in the server
     log, so ``start_langgraph_dev`` runs this before spawning instead.
     """
-    if os.environ.get("EVOSCIENTIST_SERVER_PROCESS") == "1":
+    if paths.SERVER_PROCESS:
         return
     missing = [
         name
@@ -1091,13 +1091,13 @@ def _get_tools_timeout(transport: str) -> float | None:
     """The default ``get_tools`` limit for this transport and process.
 
     URL transports always have a discovery deadline. Stdio servers have a
-    deadline only inside ``langgraph dev`` (``EVOSCIENTIST_SERVER_PROCESS=1``),
+    deadline only inside ``langgraph dev`` (``paths.SERVER_PROCESS``),
     whose health check gives up after 60s. CLI/TUI stdio discovery may wait
     as long as needed for first-launch package downloads.
     """
     if transport in _URL_TRANSPORTS:
         return _NETWORK_GET_TOOLS_TIMEOUT_SECONDS
-    if os.environ.get("EVOSCIENTIST_SERVER_PROCESS") == "1":
+    if paths.SERVER_PROCESS:
         return _SERVER_GET_TOOLS_TIMEOUT_SECONDS
     return None
 

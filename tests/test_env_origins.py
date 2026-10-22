@@ -31,10 +31,12 @@ def _clean(monkeypatch):
 
 
 def _use_dotenv(tmp_path: Path, monkeypatch) -> None:
-    """A workspace ``.env`` (the suite turns ``.env`` discovery off)."""
+    """A workspace ``.env`` with a setting of the EvoSci command (the suite
+    turns ``.env`` discovery off)."""
     dotenv = tmp_path / ".env"
-    dotenv.write_text("TAVILY_API_KEY=tvly-dotenv\n", encoding="utf-8")
+    dotenv.write_text("EVOSCIENTIST_DEFAULT_MODE=run\n", encoding="utf-8")
     monkeypatch.setattr(settings, "find_dotenv", lambda *a, **k: str(dotenv))
+    monkeypatch.delenv("EVOSCIENTIST_DEFAULT_MODE", raising=False)
 
 
 @pytest.fixture
@@ -93,7 +95,7 @@ class TestRecording:
     def test_dotenv_records_its_path(self, tmp_path, monkeypatch):
         _use_dotenv(tmp_path, monkeypatch)
         get_effective_config()
-        assert env_origin("TAVILY_API_KEY") == {
+        assert env_origin("EVOSCIENTIST_DEFAULT_MODE") == {
             "source": "dotenv",
             "path": str(tmp_path / ".env"),
         }
@@ -149,7 +151,7 @@ class TestSources:
     def test_dotenv_with_path(self, tmp_path, monkeypatch):
         _use_dotenv(tmp_path, monkeypatch)
         sources = settings_api.read_settings()["sources"]
-        assert sources["tavily_api_key"] == {
+        assert sources["default_mode"] == {
             "source": "dotenv",
             "path": str(tmp_path / ".env"),
             "shadowed": True,
@@ -187,37 +189,59 @@ class TestSources:
 
 
 class TestServerRecord:
-    """What start_langgraph_dev records for the port and host."""
+    """What start_langgraph_dev records for the server's environment."""
 
-    def test_a_dotenv_port_keeps_its_source(self, tmp_path, monkeypatch):
+    def test_dotenv_setting_not_passed_to_server(
+        self, tmp_path, monkeypatch, runtime_paths
+    ):
+        """A project ``.env`` configures its own EvoSci command only: the
+        shared server gets neither the setting nor its record."""
         from EvoScientist.langgraph_dev.manager import _server_env_origins
+        from tests.test_langgraph_dev_server_env import (
+            _patch_start_prereqs,
+            _PopenAbort,
+        )
 
         dotenv = tmp_path / ".env"
-        dotenv.write_text("EVOSCIENTIST_LANGGRAPH_DEV_PORT=6297\n", encoding="utf-8")
+        dotenv.write_text("EVOSCIENTIST_UI_BACKEND=cli\n", encoding="utf-8")
         monkeypatch.setattr(settings, "find_dotenv", lambda *a, **k: str(dotenv))
-        get_effective_config()
-        origins = _server_env_origins("6297", "127.0.0.1")
-        assert origins["EVOSCIENTIST_LANGGRAPH_DEV_PORT"] == {
-            "source": "dotenv",
-            "path": str(dotenv),
-        }
+        monkeypatch.delenv("EVOSCIENTIST_UI_BACKEND", raising=False)
+        assert get_effective_config().ui_backend == "cli"
+        captured = _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+        from EvoScientist.langgraph_dev import manager
 
-    def test_a_dotenv_workdir_keeps_its_source(self, tmp_path, monkeypatch):
-        """The server inherits the user's ``EVOSCIENTIST_WORKSPACE_DIR`` as
-        is, so the settings API reports where it came from."""
-        from EvoScientist.langgraph_dev.manager import _server_env_origins
+        with pytest.raises(_PopenAbort):
+            manager.start_langgraph_dev(workspace_dir=tmp_path, port=16178)
 
+        assert "EVOSCIENTIST_UI_BACKEND" not in captured["env"]
+        assert "EVOSCIENTIST_UI_BACKEND" not in _server_env_origins("6174", "x")
+
+
+class TestDotenvForServer:
+    """A project ``.env`` sets only the EvoSci command's own settings: every
+    agent takes its keys and settings from config.yaml and the environment."""
+
+    def test_dotenv_cannot_move_folders_read_at_import(self, tmp_path, monkeypatch):
         dotenv = tmp_path / ".env"
-        dotenv.write_text(f"EVOSCIENTIST_WORKSPACE_DIR={tmp_path}\n", encoding="utf-8")
+        dotenv.write_text(f"EVOSCIENTIST_MEMORIES_DIR={tmp_path}/mem\n")
         monkeypatch.setattr(settings, "find_dotenv", lambda *a, **k: str(dotenv))
+        monkeypatch.delenv("EVOSCIENTIST_MEMORIES_DIR", raising=False)
+
         get_effective_config()
 
-        origins = _server_env_origins("6174", "127.0.0.1")
+        assert "EVOSCIENTIST_MEMORIES_DIR" not in os.environ
 
-        assert origins["EVOSCIENTIST_WORKSPACE_DIR"] == {
-            "source": "dotenv",
-            "path": str(dotenv),
-        }
+    def test_server_reads_no_dotenv(self, monkeypatch):
+        """From the server home the search would find one in a parent folder,
+        such as ``~/.env``."""
+        from EvoScientist import paths
+
+        def found(*_args, **_kwargs):
+            raise AssertionError("the server searched for a .env")
+
+        monkeypatch.setattr(paths, "SERVER_PROCESS", True)
+        monkeypatch.setattr(settings, "find_dotenv", found)
+        get_effective_config()
 
 
 def test_an_unreadable_config_file_does_not_stop_a_start(config_file):

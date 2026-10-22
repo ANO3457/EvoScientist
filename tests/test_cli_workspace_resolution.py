@@ -63,9 +63,6 @@ def _run(
     order: list[str] = []
     captured["order"] = order
     monkeypatch.setattr(commands, "ensure_dirs", lambda: order.append("ensure_dirs"))
-    monkeypatch.setattr(
-        commands, "reload_env_dirs", lambda: order.append("reload_env_dirs")
-    )
     monkeypatch.setattr(commands, "_ensure_async_subagent_server", _fake_ensure_server)
     monkeypatch.setattr(interactive_mod, "cmd_interactive", _fake_cmd_interactive)
 
@@ -98,7 +95,7 @@ def test_cwd_is_default_workspace(monkeypatch, tmp_path):
     assert got["dirs"].work_dir == Workspace(tmp_path).root
     assert got["dirs"].run_dir is None
     assert got["server_dirs"] == got["dirs"]
-    assert got["order"] == ["reload_env_dirs", "ensure_dirs"]
+    assert got["order"] == ["ensure_dirs"]
 
 
 def test_symlinked_start_folder_gives_one_spelling(monkeypatch, tmp_path):

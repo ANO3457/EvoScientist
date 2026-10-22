@@ -400,6 +400,14 @@ def _isolate_user_dirs(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_dotenv_record(monkeypatch):
+    """The ``.env`` keys a merge warned about are per test."""
+    from EvoScientist.config import settings
+
+    monkeypatch.setattr(settings, "_DOTENV_IGNORED", set())
+
+
+@pytest.fixture(autouse=True)
 def _fresh_registry(monkeypatch):
     """Each test reads the project registry from its own data folder, and
     registers projects with a lock of its own event loop."""

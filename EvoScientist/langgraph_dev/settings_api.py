@@ -51,6 +51,7 @@ from EvoScientist.config.settings import (
     env_origin,
     get_config_dir,
     get_effective_config,
+    is_client_only,
     load_config,
     secret_hint,
     set_config_values,
@@ -108,20 +109,8 @@ def _digest(data: Any) -> str:
 
 
 def _reaches_server(name: str) -> bool:
-    """Whether the server reads ``name`` when it builds its graphs.
-
-    The launcher's drift fingerprint keeps the list of fields that never
-    reach the server.
-    """
-    from EvoScientist.langgraph_dev.manager import (
-        _FINGERPRINT_EXCLUDED_FIELDS,
-        _FINGERPRINT_EXCLUDED_PREFIXES,
-    )
-
-    return not (
-        name in _FINGERPRINT_EXCLUDED_FIELDS
-        or name.startswith(_FINGERPRINT_EXCLUDED_PREFIXES)
-    )
+    """Whether the server reads ``name`` when it builds its graphs."""
+    return not is_client_only(name)
 
 
 def _file_digests(mapping: dict[str, Any]) -> dict[str, str]:
@@ -205,8 +194,9 @@ def config_sources(mapping: dict[str, Any]) -> dict[str, dict[str, Any]]:
     A mapped environment variable wins over the file. When our own code set
     it (see :func:`~EvoScientist.config.settings.record_env_origin`), its
     recorded source is reported: ``file`` and ``default`` are copies, not
-    overrides; ``cli``, ``ccproxy`` and ``dotenv`` (with the ``.env`` path)
-    override the saved value, so ``shadowed`` is true. A variable our code
+    overrides; ``cli`` and ``ccproxy`` override the saved value, so
+    ``shadowed`` is true (``dotenv``, with the ``.env`` path, only outside
+    the server: it reads no ``.env``). A variable our code
     did not set is the user's: ``env``, shadowed. Without a variable, the
     source is ``file`` when the file holds the field, else ``default``.
     """
@@ -278,7 +268,7 @@ def _masked(name: str, value: Any) -> Any:
 def setup_needed(config: EvoScientistConfig) -> bool:
     """Whether the selected provider cannot run with this configuration.
 
-    Follows the runtime: a key from the environment or a ``.env`` counts,
+    Follows the runtime: a key from the environment counts,
     Ollama needs no key, OAuth mode needs none, and only the custom
     endpoints need a base URL (the others have a default address).
     """
@@ -315,8 +305,7 @@ def read_settings() -> dict[str, Any]:
     not settings: ``mcp.yaml`` (the MCP server file), ``subagents`` (the
     bundled sub-agent definitions) and ``version`` (the installed package).
     """
-    # First: it merges a workspace ``.env`` into the environment, as the
-    # graphs' own config reads do, so ``sources`` sees what they see.
+    # The same config reads the graphs do, so ``sources`` sees what they see.
     effective = get_effective_config()
     raw = store.read_config_bytes()
     config_error = None
@@ -639,8 +628,8 @@ def _stored_config() -> EvoScientistConfig:
 def check_key_request(body: Any) -> tuple[int, dict[str, Any]]:
     """Run one key check without saving; return ``(status, payload)``.
 
-    Without ``key``, the stored effective key (``config.yaml``, the
-    environment or a ``.env``) is tested, and only against the stored base
+    Without ``key``, the stored effective key (``config.yaml`` or the
+    environment) is tested, and only against the stored base
     URL. A variable the server copied from the file at start reads as the
     file's current value, so a key saved since then is the one tested.
     Without ``base_url``, the stored base URL or the provider's default is

@@ -34,7 +34,6 @@ from ..paths import (
     SessionDirs,
     Workspace,
     ensure_dirs,
-    reload_env_dirs,
     start_workspace_path,
 )
 from ..runtime import AsyncRuntime
@@ -2205,7 +2204,6 @@ def serve(
     ws_path = start_workspace_path(workdir, config.default_workdir)
     os.makedirs(ws_path, exist_ok=True)
     dirs = SessionDirs(Workspace(ws_path))
-    reload_env_dirs()
     ensure_dirs()
 
     from ..config import GatewaySurface, resolve_gateway_backend
@@ -3225,8 +3223,6 @@ def _main_callback(
         effective_mode = mode or config.default_mode
     workspace = Workspace(workspace_root)
 
-    # The project .env was merged into os.environ by get_effective_config().
-    reload_env_dirs()
     # Ensure memory and skills subdirs exist in workspace
     ensure_dirs()
 

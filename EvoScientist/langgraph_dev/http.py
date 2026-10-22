@@ -71,10 +71,9 @@ async def get_models(_request: Request) -> JSONResponse:
     Uses ``get_effective_config()`` (not ``load_config()``) so env-var
     overrides like ``OLLAMA_BASE_URL`` from ``_ENV_MAPPINGS`` are
     honored — matching the deploy's actual model-building behavior.
-    Offloaded to a thread because ``get_effective_config()`` calls
-    ``find_dotenv(usecwd=True)`` which invokes ``os.getcwd()`` — a
-    blocking syscall that langgraph-dev's ``blockbuster`` middleware
-    refuses to allow on the async event loop (would surface as a 500).
+    Offloaded to a thread because ``get_effective_config()`` reads the
+    config file, blocking I/O that langgraph-dev's ``blockbuster``
+    middleware refuses on the async event loop (would surface as a 500).
     """
     cfg = await asyncio.to_thread(get_effective_config)
     entries = [

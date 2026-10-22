@@ -71,9 +71,6 @@ def _run_serve_once(
     def _fake_ensure_dirs():
         order.append(("ensure_dirs", None))
 
-    def _fake_reload_env_dirs():
-        order.append(("reload_env_dirs", None))
-
     def _fake_load_agent(
         work_dir=None,
         checkpointer=None,
@@ -110,7 +107,6 @@ def _run_serve_once(
         captured["ensure_backend"] = backend
 
     monkeypatch.setattr(commands, "ensure_dirs", _fake_ensure_dirs)
-    monkeypatch.setattr(commands, "reload_env_dirs", _fake_reload_env_dirs)
     monkeypatch.setattr(
         commands, "_ensure_async_subagent_server", _fake_ensure_async_server
     )
@@ -172,9 +168,7 @@ def test_serve_workdir_has_highest_priority(monkeypatch, tmp_path):
     assert captured["dirs"] == SessionDirs(Workspace(expected))
     assert captured["media_dir"] == Workspace(expected).media_dir
     assert cli_ws.is_dir()
-    # The project .env can override the memories folder; it must be re-read
-    # before ensure_dirs() creates it.
-    assert order.index(("reload_env_dirs", None)) < order.index(("ensure_dirs", None))
+    assert ("ensure_dirs", None) in order
 
 
 def test_serve_uses_config_default_workdir_when_no_cli_workdir(monkeypatch, tmp_path):

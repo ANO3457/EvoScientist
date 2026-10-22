@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from EvoScientist import paths
 from EvoScientist.mcp.client import (
     _build_connections,
     _filter_tools,
@@ -2441,9 +2442,9 @@ class TestLoadToolsProgressCallback:
     ):
         from EvoScientist.mcp import client as mcp_client
 
-        monkeypatch.delenv("EVOSCIENTIST_SERVER_PROCESS", raising=False)
+        monkeypatch.setattr(paths, "SERVER_PROCESS", False)
         if server_process:
-            monkeypatch.setenv("EVOSCIENTIST_SERVER_PROCESS", "1")
+            monkeypatch.setattr(paths, "SERVER_PROCESS", True)
         if transport != "stdio":
             expected = mcp_client._NETWORK_GET_TOOLS_TIMEOUT_SECONDS
         elif server_process:
@@ -2463,7 +2464,7 @@ class TestLoadToolsProgressCallback:
             return {}
 
         monkeypatch.setattr(mcp_client, "_load_tools", fake_load_tools)
-        monkeypatch.setenv("EVOSCIENTIST_SERVER_PROCESS", "1")
+        monkeypatch.setattr(paths, "SERVER_PROCESS", True)
 
         config = {"srv": {"transport": "stdio", "command": "demo"}}
         await mcp_client.aload_mcp_tools(config)
@@ -2497,9 +2498,9 @@ class TestLoadToolsProgressCallback:
         monkeypatch.setattr(lc_client, "MultiServerMCPClient", _SlowClient)
         monkeypatch.setattr(mcp_client, "_SERVER_GET_TOOLS_TIMEOUT_SECONDS", 0.05)
         if server_process is None:
-            monkeypatch.delenv("EVOSCIENTIST_SERVER_PROCESS", raising=False)
+            monkeypatch.setattr(paths, "SERVER_PROCESS", False)
         else:
-            monkeypatch.setenv("EVOSCIENTIST_SERVER_PROCESS", server_process)
+            monkeypatch.setattr(paths, "SERVER_PROCESS", server_process == "1")
 
         config = {"slow_srv": {"transport": "stdio", "command": "demo"}}
         result = mcp_client.load_mcp_tools(config)
@@ -2529,7 +2530,7 @@ class TestLoadToolsProgressCallback:
 
         monkeypatch.setattr(lc_client, "MultiServerMCPClient", _HangingClient)
         monkeypatch.setattr(mcp_client, "_SERVER_GET_TOOLS_TIMEOUT_SECONDS", 0.05)
-        monkeypatch.setenv("EVOSCIENTIST_SERVER_PROCESS", "1")
+        monkeypatch.setattr(paths, "SERVER_PROCESS", True)
 
         config = {"slow_srv": {"transport": "stdio", "command": "demo"}}
         with caplog.at_level(logging.WARNING, logger=mcp_client.logger.name):
@@ -2568,7 +2569,7 @@ class TestNetworkDiscoveryDeadline:
                         cancelled.set()
                 return [tool]
 
-        monkeypatch.delenv("EVOSCIENTIST_SERVER_PROCESS", raising=False)
+        monkeypatch.setattr(paths, "SERVER_PROCESS", False)
         monkeypatch.setattr(mcp_client, "_NETWORK_GET_TOOLS_TIMEOUT_SECONDS", 0.02)
         monkeypatch.setattr(
             "langchain_mcp_adapters.client.MultiServerMCPClient", Client
@@ -2681,7 +2682,7 @@ class TestEnsureNodeForStdio:
         from EvoScientist.setup import node as setup_node
 
         calls = {"ensure": 0, "activate": 0}
-        monkeypatch.delenv("EVOSCIENTIST_SERVER_PROCESS", raising=False)
+        monkeypatch.setattr(paths, "SERVER_PROCESS", False)
 
         def ensure(*_a, **_k):
             calls["ensure"] += 1
@@ -2729,7 +2730,7 @@ class TestEnsureNodeForStdio:
         def offline(*_a, **_k):
             raise StageError("download_failed", "offline")
 
-        monkeypatch.delenv("EVOSCIENTIST_SERVER_PROCESS", raising=False)
+        monkeypatch.setattr(paths, "SERVER_PROCESS", False)
         monkeypatch.setattr(mcp_client.shutil, "which", lambda _c: None)
         monkeypatch.setattr(setup_node, "ensure_node", offline)
         with caplog.at_level("WARNING"):
@@ -2748,7 +2749,7 @@ class TestEnsureNodeForStdio:
         def broken(*_a, **_k):
             raise NotImplementedError("compression type 99")
 
-        monkeypatch.delenv("EVOSCIENTIST_SERVER_PROCESS", raising=False)
+        monkeypatch.setattr(paths, "SERVER_PROCESS", False)
         monkeypatch.setattr(mcp_client.shutil, "which", lambda _c: None)
         monkeypatch.setattr(setup_node, "ensure_node", broken)
         with caplog.at_level("WARNING"):
@@ -2760,7 +2761,7 @@ class TestEnsureNodeForStdio:
     def test_does_not_install_inside_langgraph_dev(self, monkeypatch, calls):
         from EvoScientist.mcp import client as mcp_client
 
-        monkeypatch.setenv("EVOSCIENTIST_SERVER_PROCESS", "1")
+        monkeypatch.setattr(paths, "SERVER_PROCESS", True)
         monkeypatch.setattr(mcp_client.shutil, "which", lambda _c: None)
         mcp_client._ensure_node_for_stdio(
             {"fs": {"transport": "stdio", "command": "npx"}}

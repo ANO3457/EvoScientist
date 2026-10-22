@@ -353,7 +353,7 @@ What the mounts are for:
 
 | Mount | Purpose |
 | --- | --- |
-| `--env-file .env` | API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) |
+| `--env-file .env` | API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …), set as environment variables of the container |
 | `./workspace:/workspace` | The agent's working directory |
 | `evosci-data:/home/evosci/.evoscientist` | Persistent app state: sessions DB, global skills, memories, and `config.yaml`/`mcp.yaml` |
 
@@ -362,7 +362,7 @@ The image does not include the agent's research Python; run `EvoSci setup` once 
 > [!IMPORTANT]
 > The image runs as a non-root user (`evosci`, UID `1000`). For the `./workspace` bind mount, the host directory must be writable by that UID. If your host user ID differs, either `chown -R 1000:1000 ./workspace` once, or pass `--user "$(id -u):$(id -g)"` on every `docker run` so the container takes on your UID.
 
-Or use `docker compose` (a starter [`docker-compose.yml`](./docker-compose.yml) is included):
+Or use `docker compose` (a starter [`docker-compose.yml`](./docker-compose.yml) is included; it reads your API keys from a `.env` file next to it, one `NAME=value` per line, which you create):
 
 ```bash
 docker compose run --rm evoscientist
@@ -432,13 +432,7 @@ export TAVILY_API_KEY="tvly-..."    # app.tavily.com
 
 Or use `EvoSci config set` to persist keys in `~/.config/evoscientist/config.yaml`.
 
-Alternatively, copy the example `.env` file for project-level configuration:
-
-```bash
-cp .env.example .env  # then fill in your keys
-```
-
-> ⚠️ Never commit `.env` files with real keys. It is already in `.gitignore`.
+Every agent takes its keys from `config.yaml` or the environment. A project `.env` holds only settings of the `EvoSci` command started in that folder, such as `EVOSCIENTIST_DEFAULT_MODE` or `EVOSCIENTIST_UI_BACKEND`; `EvoSci` warns about, and ignores, any key or other setting in it.
 
 </details>
 

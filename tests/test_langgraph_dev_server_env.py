@@ -115,6 +115,26 @@ def test_start_refuses_when_another_server_holds_data_folder(
         manager.start_langgraph_dev(workspace_dir=tmp_path, port=16178)
 
 
+def test_start_gives_server_no_dotenv_keys(monkeypatch, tmp_path, runtime_paths):
+    """Every agent takes its keys from config.yaml and the environment: a
+    project ``.env`` key reaches neither this process nor the server."""
+    from EvoScientist.config import settings
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("TAVILY_API_KEY=tvly-dotenv\nOPENAI_API_KEY=sk-dotenv\n")
+    monkeypatch.setattr(settings, "find_dotenv", lambda *a, **k: str(dotenv))
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-shell")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    settings.get_effective_config()
+    captured = _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+    with pytest.raises(_PopenAbort):
+        manager.start_langgraph_dev(workspace_dir=tmp_path, port=16178)
+
+    env = captured["env"]
+    assert env["TAVILY_API_KEY"] == "tvly-shell"
+    assert "OPENAI_API_KEY" not in env
+
+
 def test_start_sets_the_browser_boundary(monkeypatch, tmp_path, runtime_paths):
     """Set on every start, so nothing inherited (a workspace ``.env``) widens
     it; cloudflared inherits the server's environment."""
@@ -232,36 +252,40 @@ def test_env_host_replaces_inherited(monkeypatch, tmp_path, runtime_paths):
 
 
 def test_async_subagents_available_init_true_in_server(monkeypatch):
-    """When ``EVOSCIENTIST_SERVER_PROCESS`` is set in the env at module
-    import time, ``_ASYNC_SUBAGENTS_AVAILABLE`` initializes to True so the
+    """In the server (``paths.SERVER_PROCESS``, read from
+    ``EVOSCIENTIST_SERVER_PROCESS`` at import), ``_ASYNC_SUBAGENTS_AVAILABLE``
+    initializes to True so the
     deployed main agent's ``_maybe_swap_async_subagents`` swaps eagerly
     without waiting for ``start_langgraph_dev`` to flip the flag (which it
     can't — the server never calls that function on itself)."""
-    monkeypatch.setenv("EVOSCIENTIST_SERVER_PROCESS", "1")
     # Re-import the module to re-run the module-level initialization.
     import importlib
 
     import EvoScientist.langgraph_dev.manager as mgr
+    from EvoScientist import paths
 
+    monkeypatch.setattr(paths, "SERVER_PROCESS", True)
     reloaded = importlib.reload(mgr)
     try:
         assert reloaded._ASYNC_SUBAGENTS_AVAILABLE is True
         assert reloaded.is_async_subagents_available() is True
     finally:
-        # Restore: reload again without the env var so subsequent tests
-        # see the normal initialization.
-        monkeypatch.delenv("EVOSCIENTIST_SERVER_PROCESS", raising=False)
+        # Restore: reload again as a CLI process so subsequent tests see
+        # the normal initialization.
+        monkeypatch.setattr(paths, "SERVER_PROCESS", False)
         importlib.reload(mgr)
 
 
 def test_async_subagents_available_init_false_without_env(monkeypatch):
-    """When the env var is unset, ``_ASYNC_SUBAGENTS_AVAILABLE`` initializes
-    to False — the pre-existing safety behavior (fall back to sync if
-    langgraph dev isn't reachable)."""
-    monkeypatch.delenv("EVOSCIENTIST_SERVER_PROCESS", raising=False)
+    """In a CLI process, ``_ASYNC_SUBAGENTS_AVAILABLE`` initializes to False —
+    the pre-existing safety behavior (fall back to sync if langgraph dev
+    isn't reachable)."""
     import importlib
 
     import EvoScientist.langgraph_dev.manager as mgr
+    from EvoScientist import paths
+
+    monkeypatch.setattr(paths, "SERVER_PROCESS", False)
 
     reloaded = importlib.reload(mgr)
     assert reloaded._ASYNC_SUBAGENTS_AVAILABLE is False

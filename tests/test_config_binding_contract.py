@@ -25,10 +25,13 @@ from __future__ import annotations
 
 from dataclasses import fields as dataclass_fields
 
-from EvoScientist.config.settings import EvoScientistConfig, save_config
+from EvoScientist.config.settings import (
+    CLIENT_ONLY_FIELDS,
+    CLIENT_ONLY_PREFIXES,
+    EvoScientistConfig,
+    save_config,
+)
 from EvoScientist.langgraph_dev.manager import (
-    _FINGERPRINT_EXCLUDED_FIELDS,
-    _FINGERPRINT_EXCLUDED_PREFIXES,
     _FINGERPRINT_FILE_FIELDS,
     _server_config_fingerprint,
 )
@@ -86,9 +89,9 @@ def _config_field_names() -> set[str]:
 def _excluded_field_names() -> set[str]:
     """Config fields excluded from the fingerprint (explicit + prefix)."""
     names = _config_field_names()
-    excluded = {n for n in names if n in _FINGERPRINT_EXCLUDED_FIELDS}
+    excluded = {n for n in names if n in CLIENT_ONLY_FIELDS}
     for name in names - excluded:
-        if any(name.startswith(p) for p in _FINGERPRINT_EXCLUDED_PREFIXES):
+        if any(name.startswith(p) for p in CLIENT_ONLY_PREFIXES):
             excluded.add(name)
     return excluded
 
@@ -149,13 +152,13 @@ class TestExclusionTable:
         )
 
     def test_every_excluded_prefix_has_a_channel(self):
-        missing = set(_FINGERPRINT_EXCLUDED_PREFIXES) - set(PREFIX_CHANNELS)
+        missing = set(CLIENT_ONLY_PREFIXES) - set(PREFIX_CHANNELS)
         assert not missing, (
             f"Excluded prefixes without a named channel: {sorted(missing)}"
         )
 
     def test_prefix_channel_table_has_no_stale_entries(self):
-        stale = set(PREFIX_CHANNELS) - set(_FINGERPRINT_EXCLUDED_PREFIXES)
+        stale = set(PREFIX_CHANNELS) - set(CLIENT_ONLY_PREFIXES)
         assert not stale, f"Channel-table prefixes no longer excluded: {sorted(stale)}"
 
 

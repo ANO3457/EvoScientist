@@ -354,7 +354,7 @@ def run_standalone(
             get_effective_config,
             resolve_gateway_backend,
         )
-        from ..paths import reload_env_dirs, start_workspace_path
+        from ..paths import start_workspace_path
 
         config = get_effective_config()
         if getattr(config, "openai_auth_mode", "api_key") == "oauth":
@@ -369,7 +369,6 @@ def run_standalone(
                 raise SystemExit(1)
         # ccproxy starts after the sign-in check, like the other entry points.
         _ensure_ccproxy(config)
-        reload_env_dirs()
         backend = resolve_gateway_backend(config, GatewaySurface.STANDALONE)
         # The agent serves ``default_workdir``, else the current directory.
         ws_path = start_workspace_path(default_workdir=config.default_workdir)

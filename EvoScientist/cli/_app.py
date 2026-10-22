@@ -31,7 +31,7 @@ Examples:
   # Add a stdio server with env vars (hardcoded):
   EvoSci mcp add my-server node --env API_KEY=xxx -- server.js
 
-  # Add a server with runtime env ref (resolved from .env at startup):
+  # Add a server with runtime env ref (resolved from the environment at startup):
   EvoSci mcp add brave-search npx --env-ref BRAVE_API_KEY -- -y @modelcontextprotocol/server-brave-search
 
   # Expose to a specific sub-agent (e.g. research-agent):

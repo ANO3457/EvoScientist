@@ -372,7 +372,7 @@ docker run -it --rm \
 
 | 挂载 | 用途 |
 | --- | --- |
-| `--env-file .env` | API 密钥（`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等） |
+| `--env-file .env` | API 密钥（`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等），作为容器的环境变量设置 |
 | `./workspace:/workspace` | 智能体的工作目录 |
 | `evosci-data:/home/evosci/.evoscientist` | 持久化应用状态：会话数据库、全局技能、记忆，以及 `config.yaml` / `mcp.yaml` |
 
@@ -381,7 +381,7 @@ docker run -it --rm \
 > [!IMPORTANT]
 > 镜像以非 root 用户运行（`evosci`，UID `1000`）。`./workspace` bind 挂载的宿主目录必须可被该 UID 写入。如果你的宿主用户 ID 不同，可以一次性 `chown -R 1000:1000 ./workspace`，或在每次 `docker run` 时加上 `--user "$(id -u):$(id -g)"`，让容器使用你的 UID。
 
-也可使用 `docker compose`（仓库自带一个起步用的 [`docker-compose.yml`](./docker-compose.yml)）：
+也可使用 `docker compose`（仓库自带一个起步用的 [`docker-compose.yml`](./docker-compose.yml)；它从同目录下你自己创建的 `.env` 文件读取 API 密钥，每行一个 `NAME=value`）：
 
 ```bash
 docker compose run --rm evoscientist
@@ -451,13 +451,7 @@ export TAVILY_API_KEY="tvly-..."    # app.tavily.com
 
 也可以使用 `EvoSci config set` 将密钥持久化到 `~/.config/evoscientist/config.yaml`。
 
-或者复制示例 `.env` 文件用于项目级配置：
-
-```bash
-cp .env.example .env  # 填入你的密钥
-```
-
-> ⚠️ 切勿将包含真实密钥的 `.env` 文件提交到版本库。该文件已在 `.gitignore` 中。
+所有智能体都从 `config.yaml` 或环境变量中读取密钥。项目目录中的 `.env` 只包含在该目录启动的 `EvoSci` 命令自身的设置，例如 `EVOSCIENTIST_DEFAULT_MODE` 或 `EVOSCIENTIST_UI_BACKEND`；其中的任何密钥或其他设置都会被 `EvoSci` 忽略并给出警告。
 
 </details>
 
