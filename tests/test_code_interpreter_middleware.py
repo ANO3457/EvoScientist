@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from EvoScientist.middleware import code_interpreter
 from EvoScientist.middleware.code_interpreter import (
     _DEFAULT_PTC_ALLOWLIST,
     aclose_code_interpreters,
@@ -84,6 +85,30 @@ async def test_aclose_code_interpreters_bounds_stalled_cleanup(monkeypatch, capl
 
     assert cancelled.is_set()
     assert "cleanup did not finish within 0.01 seconds" in caplog.text
+
+
+def test_del_skips_slot_close_during_interpreter_shutdown(monkeypatch):
+    middleware = create_code_interpreter_middleware()
+    registry = middleware._registry
+    registry.get("slot")
+    monkeypatch.setattr(code_interpreter.sys, "is_finalizing", lambda: True)
+
+    middleware.__del__()
+
+    remaining = sorted(registry._slots)
+    monkeypatch.undo()
+    registry.close()
+    assert remaining == ["slot"]
+
+
+def test_del_still_closes_slots_before_shutdown():
+    middleware = create_code_interpreter_middleware()
+    registry = middleware._registry
+    registry.get("slot")
+
+    middleware.__del__()
+
+    assert registry._slots == {}
 
 
 def test_middleware_uses_thread_mode():

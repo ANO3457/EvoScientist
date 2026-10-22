@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 import weakref
 
 from langchain.agents.middleware.types import ModelRequest
@@ -96,6 +97,13 @@ class EvoCodeInterpreterMiddleware(CodeInterpreterMiddleware):
             with contextlib.suppress(Exception):
                 await registry.aevict(slot_id)
         self._ptc_tools_by_slot.clear()
+
+    # Upstream's close blocks on each slot's worker thread, and those threads
+    # can no longer run once the interpreter is finalizing.
+    def __del__(self) -> None:
+        if sys.is_finalizing():
+            return
+        super().__del__()
 
 
 _live_interpreters = weakref.WeakSet()
