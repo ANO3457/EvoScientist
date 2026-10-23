@@ -284,7 +284,6 @@ def test_ensure_registers_project_after_reuse(monkeypatch, reused_server, tmp_pa
 
     assert registered == [(Workspace(tmp_path), "http://127.0.0.1:6174")]
     assert manager.is_async_subagents_available()
-    assert manager.SERVED_WORKSPACE == Workspace(tmp_path).root
 
 
 def test_ensure_failed_registration_counts_as_server_unavailable(
@@ -302,7 +301,6 @@ def test_ensure_failed_registration_counts_as_server_unavailable(
     manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
 
     assert not manager.is_async_subagents_available()
-    assert manager.SERVED_WORKSPACE is None
     assert "setup failed" in caplog.text
 
 
@@ -317,12 +315,10 @@ def test_ensure_missing_folder_keeps_current_session_server(
         raise ProjectFolderMissingError(workspace.root)
 
     monkeypatch.setattr(registration, "register_folder", missing)
-    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
 
     with pytest.raises(ProjectFolderMissingError):
         manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
     assert manager.is_async_subagents_available()
-    assert manager.SERVED_WORKSPACE == tmp_path / "current"
 
 
 def test_ensure_unusable_lock_is_failed_start(monkeypatch, reused_server, tmp_path):
@@ -336,11 +332,9 @@ def test_ensure_unusable_lock_is_failed_start(monkeypatch, reused_server, tmp_pa
             raise PermissionError("read-only")
 
     monkeypatch.setattr(manager, "FileLock", _Lock)
-    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
 
     assert manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path) is False
     assert manager.SERVER_UNAVAILABLE
-    assert manager.SERVED_WORKSPACE is None
 
 
 @pytest.mark.parametrize("error", [PermissionError("pid file"), ValueError("bug")])
@@ -354,12 +348,10 @@ def test_ensure_start_error_leaves_no_server(
         raise error
 
     monkeypatch.setattr(manager, "_ensure_langgraph_dev_locked", broken)
-    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
 
     with pytest.raises(type(error)):
         manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
     assert not manager.is_async_subagents_available()
-    assert manager.SERVED_WORKSPACE is None
 
 
 def test_ensure_older_server_serves_no_project(monkeypatch, reused_server, tmp_path):
@@ -371,12 +363,10 @@ def test_ensure_older_server_serves_no_project(monkeypatch, reused_server, tmp_p
         raise OlderServerError()
 
     monkeypatch.setattr(registration, "register_folder", older)
-    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
 
     with pytest.raises(OlderServerError):
         manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
     assert not manager.is_async_subagents_available()
-    assert manager.SERVED_WORKSPACE is None
 
 
 def test_cli_refuses_known_project_with_missing_folder(tmp_path):
@@ -506,9 +496,7 @@ def test_ensure_unexpected_registration_error_leaves_no_server(
         raise ValueError("bug")
 
     monkeypatch.setattr(registration, "register_folder", broken)
-    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
 
     with pytest.raises(ValueError, match="bug"):
         manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
     assert not manager.is_async_subagents_available()
-    assert manager.SERVED_WORKSPACE is None

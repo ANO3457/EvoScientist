@@ -819,7 +819,6 @@ def _ensure_async_subagent_server(
                 workspace_dir=dirs.workspace.root,
                 backend=backend,
             )
-            _reconcile_autoskill_schedule(config, workspace=dirs.workspace)
     except ServerUnusableError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         _remove_unused_run_dir(dirs.run_dir)
@@ -892,25 +891,6 @@ def warn_server_backend_hitl_caveats(
         "workspace), and a model or team switch is dropped for the rest of a "
         "turn that resumes after a tool approval.[/yellow]"
     )
-
-
-def _reconcile_autoskill_schedule(config: Any, *, workspace: Workspace) -> None:
-    """Best-effort reconciliation for EvoMemory's hidden AutoSkills cron.
-
-    The cron belongs to the workspace, whichever run folder the session
-    works in. Only for a server known to serve *workspace*.
-    """
-    try:
-        from ..langgraph_dev import manager
-        from ..memory.autoskills.schedule import reconcile_autoskill_schedule
-
-        if manager.SERVED_WORKSPACE != workspace.root:
-            return
-        reconcile_autoskill_schedule(config, workspace_dir=workspace.root)
-    except Exception:
-        logging.getLogger(__name__).warning(
-            "Failed to reconcile EvoMemory AutoSkills schedule", exc_info=True
-        )
 
 
 def _pending_skill_proposals_message(workspace_dir: str | Path) -> str | None:
@@ -1018,11 +998,6 @@ async def _register_project(
             config,
             workspace_dir=dirs.workspace.root,
             backend=backend,
-        )
-        await asyncio.to_thread(
-            _reconcile_autoskill_schedule,
-            config,
-            workspace=dirs.workspace,
         )
     return served
 
@@ -1575,9 +1550,8 @@ async def _apply_serve_resume_state(
         proactive = getattr(channel_runtime, "proactive", None)
         moves_workspace = new_dirs.workspace != runtime_state.dirs.workspace
         if proactive is not None and moves_workspace:
-            # Until C17 each workspace has its own cron store: pause the thread
-            # serve leaves and delete this workspace's proactive cron while its
-            # store is still the served one.
+            # Serve follows one workspace at a time: pause the thread it leaves
+            # and delete the proactive cron of the workspace it leaves.
             if thread_changed:
                 await leave_thread(proactive)
             await asyncio.to_thread(_serve_proactive_call, proactive.stop)

@@ -2,9 +2,11 @@
 
 EvoScientist scheduled tasks ARE langgraph crons targeting the ``scheduler``
 graph. This module is the single choke-point so the ``/schedule`` command and the
-NL ``schedule_task`` tool share one implementation, and every cron (AutoSkills'
-too) is created with :func:`create_cron`, which tags it, and deleted with
-:func:`delete_cron`, which checks it is the workspace's own.
+NL ``schedule_task`` tool share one implementation: a client creates a cron with
+:func:`create_cron`, which tags it, and deletes it with :func:`delete_cron`,
+which checks it is the workspace's own. Every cron is built by
+:func:`cron_request`, also inside the server, which reconciles the AutoSkills
+crons in process (``langgraph_dev.server_crons``).
 
 Every cron belongs to the workspace whose assistant it runs on, and is listed,
 paused and deleted only from that workspace. It also carries the workspace root
@@ -156,6 +158,34 @@ def is_available() -> bool:
     return bool(is_langgraph_dev_running(base_url=_scheduler_url()))
 
 
+def cron_request(
+    *,
+    workspace: Workspace,
+    graph_id: str,
+    schedule: str,
+    input: dict[str, Any],
+    metadata: dict[str, str],
+    timezone: str | None,
+    multitask_strategy: str | None = None,
+    durability: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """The assistant and the fields of a cron of *workspace* on its
+    *graph_id* assistant: tagged with it, and its runs work in it. Shared by
+    :func:`create_cron` and the server, which creates crons in process."""
+    kwargs: dict[str, Any] = {
+        "schedule": schedule,
+        "input": input,
+        "metadata": {**metadata, "workspace_dir": workspace.key},
+        "config": run_config(workspace),
+        "timezone": timezone,
+    }
+    if multitask_strategy is not None:
+        kwargs["multitask_strategy"] = multitask_strategy
+    if durability is not None:
+        kwargs["durability"] = durability
+    return launch_assistant_id(graph_id, workspace), kwargs
+
+
 def create_cron(
     client: Any,
     *,
@@ -178,18 +208,16 @@ def create_cron(
     from overlapping) applies only then. *durability* sets how often a run
     checkpoints (``"exit"``: once, at the end).
     """
-    kwargs: dict[str, Any] = {
-        "schedule": schedule,
-        "input": input,
-        "metadata": {**metadata, "workspace_dir": workspace.key},
-        "config": run_config(workspace),
-        "timezone": timezone,
-    }
-    if multitask_strategy is not None:
-        kwargs["multitask_strategy"] = multitask_strategy
-    if durability is not None:
-        kwargs["durability"] = durability
-    assistant_id = launch_assistant_id(graph_id, workspace)
+    assistant_id, kwargs = cron_request(
+        workspace=workspace,
+        graph_id=graph_id,
+        schedule=schedule,
+        input=input,
+        metadata=metadata,
+        timezone=timezone,
+        multitask_strategy=multitask_strategy,
+        durability=durability,
+    )
     if thread_id is not None:
         return client.crons.create_for_thread(thread_id, assistant_id, **kwargs)
     return client.crons.create(assistant_id=assistant_id, **kwargs)

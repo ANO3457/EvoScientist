@@ -267,9 +267,9 @@ def _ensure_standalone_dev_server(
     stops startup with exit code 1; a generic start failure does not raise
     here — ``ensure_langgraph_dev`` leaves the dev server unavailable, and
     ``create_runtime_gateways_for_config`` then falls back to the in-process
-    gateway for the run. serve's autoskill-schedule reconciliation and
-    config-drift hint are intentionally not mirrored here (no console, and
-    channels do not reconcile schedules).
+    gateway for the run. serve's config-drift hint is not mirrored here (no
+    console); the server reconciles the project's AutoSkills schedule as it
+    registers it.
     """
     if backend != "langgraph_server":
         return

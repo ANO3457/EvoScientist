@@ -160,12 +160,6 @@ CONFIG_DRIFT_SINCE_LAUNCH = False
 # ``agent_shell.shell_drift_message``). The CLI prints it after startup.
 AGENT_SHELL_DRIFT: str | None = None
 
-# Set by ``ensure_langgraph_dev``: the project root the server registered for
-# this process's session. None when it did not, and after a stop. Callers
-# compare it with their own root before treating the server as serving them:
-# another session of this process may have registered another project since.
-SERVED_WORKSPACE: Path | None = None
-
 # Set by ``ensure_langgraph_dev``: the session needs the server and does not
 # have it (it did not start, or did not register the project). The TUI shows
 # :data:`SERVER_UNAVAILABLE_MESSAGE` in the app, where the terminal is hidden.
@@ -1282,9 +1276,8 @@ def stop_langgraph_dev(proc: subprocess.Popen | None = None) -> None:
     concurrent ``ensure_langgraph_dev`` callers (which also hold ``_LOCK``)
     don't observe partially-cleared state.
     """
-    global _PROCESS, SERVED_WORKSPACE
+    global _PROCESS
     with _LOCK:
-        SERVED_WORKSPACE = None
         proc = proc if proc is not None else _PROCESS
         if proc is None:
             # No live process to stop, but stale PID/sidecar files may still
@@ -1388,17 +1381,16 @@ def ensure_langgraph_dev(
             whether the server is needed at all.
     """
 
-    def settle(found: _Found, served: Path | None, *, needed: bool = True) -> bool:
+    def settle(found: _Found, *, needed: bool = True) -> bool:
         global _ASYNC_SUBAGENTS_AVAILABLE, CONFIG_DRIFT_SINCE_LAUNCH
-        global AGENT_SHELL_DRIFT, SERVED_WORKSPACE, SERVER_UNAVAILABLE
+        global AGENT_SHELL_DRIFT, SERVER_UNAVAILABLE
         _ASYNC_SUBAGENTS_AVAILABLE = found.available
-        SERVED_WORKSPACE = served
         CONFIG_DRIFT_SINCE_LAUNCH, AGENT_SHELL_DRIFT = found.drift, found.shell_drift
         SERVER_UNAVAILABLE = needed and not found.available
         return not SERVER_UNAVAILABLE
 
     if not needs_langgraph_dev(config, backend=backend):
-        return settle(_Found(), None, needed=False)
+        return settle(_Found(), needed=False)
 
     # Two layers of locking:
     #   1. ``FileLock`` — cross-process coordination. Without it, two CLI
@@ -1421,7 +1413,7 @@ def ensure_langgraph_dev(
             _FILE_LOCK_TIMEOUT,
             RUNTIME.lock_file,
         )
-        return settle(_Found(), None)
+        return settle(_Found())
     except OSError as exc:
         # The runtime folder or its lock cannot be used: a failed start.
         logger.warning(
@@ -1430,17 +1422,17 @@ def ensure_langgraph_dev(
             RUNTIME.lock_file,
             exc,
         )
-        return settle(_Found(), None)
+        return settle(_Found())
     try:
         with _LOCK:
             found = _ensure_langgraph_dev_locked(config, workspace_dir)
     except BaseException:
-        settle(_Found(), None)
+        settle(_Found())
         raise
     finally:
         lock.release()
     if not found.available or workspace_dir is None:
-        return settle(found, None)
+        return settle(found)
 
     from .sdk import langgraph_dev_url
 
@@ -1449,7 +1441,7 @@ def ensure_langgraph_dev(
         registration.register_folder(workspace, url=langgraph_dev_url(config))
     except registration.OlderServerError:
         # Unusable for any project, the session's current one included.
-        settle(_Found(), None)
+        settle(_Found())
         raise
     except ServerUnusableError:
         # The session stays in its project: its state stays as it was.
@@ -1459,11 +1451,11 @@ def ensure_langgraph_dev(
             "%s Falling back to sync sub-agent delegation for this session.",
             exc,
         )
-        return settle(replace(found, available=False), None)
+        return settle(replace(found, available=False))
     except BaseException:
-        settle(_Found(), None)
+        settle(_Found())
         raise
-    return settle(found, workspace.root)
+    return settle(found)
 
 
 def serve_project(

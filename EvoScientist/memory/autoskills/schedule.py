@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ...config import EvoScientistConfig
 from ...cron.schedule import (
     asearch_all,
-    create_cron,
-    delete_cron,
     owned,
     run_config,
-    search_all,
     workspace_key,
 )
 from ...langgraph_dev.assistants import launch_assistant_id
@@ -28,6 +27,17 @@ from ...paths import SessionDirs, Workspace
 
 AUTOSKILL_GRAPH_ID = "evomemory-autoskills"
 AUTOSKILL_RUN_KIND = "evomemory_autoskills"
+# The settings an AutoSkills cron is built from (see plan_autoskill_schedule):
+# changing one reschedules every project's cron.
+AUTOSKILL_SETTINGS = frozenset(
+    {
+        "memory_skill_synthesis_enabled",
+        "memory_skill_synthesis_mode",
+        "memory_skill_synthesis_cadence",
+        "memory_skill_synthesis_time",
+        "scheduler_default_timezone",
+    }
+)
 
 
 def autoskill_cron(cadence: str, time_hhmm: str) -> str:
@@ -70,25 +80,12 @@ def _owned_by(
     return owned(rows, Workspace(workspace_dir))
 
 
-def list_autoskill_schedules(
-    config: EvoScientistConfig,
-    *,
-    workspace_dir: str | Path,
-) -> list[dict[str, Any]]:
-    """Return the workspace's internal AutoSkills cron records."""
-    rows = search_all(
-        get_langgraph_sync_client(url=langgraph_dev_url(config)),
-        metadata={"run_kind": AUTOSKILL_RUN_KIND},
-    )
-    return _owned_by(rows, workspace_dir)
-
-
 async def alist_autoskill_schedules(
     config: EvoScientistConfig,
     *,
     workspace_dir: str | Path,
 ) -> list[dict[str, Any]]:
-    """Async variant of :func:`list_autoskill_schedules`."""
+    """The workspace's internal AutoSkills cron records."""
     rows = await asearch_all(
         get_langgraph_async_client(url=langgraph_dev_url(config)),
         metadata={"run_kind": AUTOSKILL_RUN_KIND},
@@ -103,37 +100,50 @@ def _forwarded_workspace(cron: dict[str, Any]) -> str | None:
     return workspace_key(configurable.get("workspace_dir"))
 
 
-def reconcile_autoskill_schedule(
+@dataclass(frozen=True)
+class AutoskillCron:
+    """The AutoSkills cron the configuration asks for (the fields of
+    :func:`~EvoScientist.cron.schedule.cron_request`)."""
+
+    schedule: str
+    input: dict[str, Any]
+    metadata: dict[str, str]
+    timezone: str | None
+
+
+@dataclass(frozen=True)
+class AutoskillPlan:
+    """What a reconcile does with a workspace's AutoSkills crons: keep
+    *keep* (a matching cron) or create *create*, then delete *delete*."""
+
+    keep: dict[str, Any] | None
+    create: AutoskillCron | None
+    delete: list[dict[str, Any]]
+
+
+def plan_autoskill_schedule(
     config: EvoScientistConfig,
-    *,
-    workspace_dir: str | Path,
-) -> dict[str, Any]:
-    """Ensure the workspace's hidden AutoSkills cron matches config.
-
-    Only this workspace's AutoSkills crons are listed, replaced or deleted.
-    A cron that matches is kept and any other is deleted; without one, the
-    replacement is created before the old crons are deleted, so a failed
-    create leaves them running. A failed delete raises; the next reconcile
-    keeps the matching cron and deletes the rest.
-    """
-    from ...langgraph_dev.manager import is_langgraph_dev_running
-
-    if not is_langgraph_dev_running(base_url=langgraph_dev_url(config)):
-        return {"status": "unavailable"}
-
-    workspace = Workspace(workspace_dir)
-    client = get_langgraph_sync_client(url=langgraph_dev_url(config))
-    existing = list_autoskill_schedules(config, workspace_dir=workspace_dir)
+    workspace: Workspace,
+    existing: list[dict[str, Any]],
+) -> AutoskillPlan:
+    """The reconcile of *workspace*'s AutoSkills crons *existing* against
+    *config*: disabled, every one goes; else a matching one is kept and the
+    rest go, or the replacement is created before the old ones go, so a
+    failed create leaves them running. Blocking (the default timezone reads
+    the system's); ``ValueError`` for an unknown timezone."""
     if not config.memory_skill_synthesis_enabled:
-        for row in existing:
-            delete_cron(client, row, workspace=workspace)
-        return {"status": "disabled", "deleted": len(existing)}
-
+        return AutoskillPlan(keep=None, create=None, delete=list(existing))
     schedule = autoskill_cron(
         config.memory_skill_synthesis_cadence,
         config.memory_skill_synthesis_time,
     )
     metadata = _autoskill_metadata(config=config, schedule=schedule)
+    timezone = default_scheduler_timezone(config)
+    if timezone is not None:
+        try:
+            ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"Unknown scheduler timezone {timezone!r}.") from exc
     # A cron created before its runs forwarded the workspace, or before they
     # ran on the workspace's assistant, does not match.
     assistant_id = launch_assistant_id(AUTOSKILL_GRAPH_ID, workspace)
@@ -141,6 +151,7 @@ def reconcile_autoskill_schedule(
         row
         for row in existing
         if row.get("schedule") == schedule
+        and row.get("timezone") == timezone
         and bool(row.get("enabled", True))
         and (row.get("metadata") or {}).get("mode") == metadata["mode"]
         and _forwarded_workspace(row) == workspace.key
@@ -148,27 +159,16 @@ def reconcile_autoskill_schedule(
     ]
     if matching:
         kept = matching[0]
-        for row in existing:
-            if row is not kept:
-                delete_cron(client, row, workspace=workspace)
-        return {"status": "unchanged", "cron_id": kept.get("cron_id")}
-
-    created = create_cron(
-        client,
-        workspace=workspace,
-        graph_id=AUTOSKILL_GRAPH_ID,
+        return AutoskillPlan(
+            keep=kept, create=None, delete=[r for r in existing if r is not kept]
+        )
+    create = AutoskillCron(
         schedule=schedule,
         input=_autoskill_input(),
         metadata=metadata,
-        timezone=default_scheduler_timezone(config),
+        timezone=timezone,
     )
-    for row in existing:
-        delete_cron(client, row, workspace=workspace)
-    return {
-        "status": "created",
-        "cron_id": created.get("cron_id"),
-        "schedule": schedule,
-    }
+    return AutoskillPlan(keep=None, create=create, delete=list(existing))
 
 
 def run_autoskill_now(

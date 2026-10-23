@@ -23,7 +23,6 @@ from EvoScientist.setup import server as server_stage
 def started(monkeypatch) -> list:
     """Fake the server start; return the projects it was started for."""
     import EvoScientist.ccproxy_manager as ccproxy_mod
-    from EvoScientist.cli import commands
 
     calls: list = []
 
@@ -36,7 +35,6 @@ def started(monkeypatch) -> list:
     monkeypatch.setattr(
         ccproxy_mod, "maybe_start_ccproxy", lambda config, *, lasting: None
     )
-    monkeypatch.setattr(commands, "_reconcile_autoskill_schedule", lambda *a, **k: None)
     return calls
 
 

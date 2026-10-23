@@ -292,9 +292,7 @@ class AutoSkillsCommand(Command):
         value: str | None,
     ) -> None:
         from ...config import get_effective_config, set_config_value
-        from ...memory.autoskills.schedule import reconcile_autoskill_schedule
 
-        workspace_dir = self._workspace_dir(ctx)
         if not value:
             cfg = get_effective_config()
             current = self._display_value(getattr(cfg, key))
@@ -325,15 +323,13 @@ class AutoSkillsCommand(Command):
         cfg = get_effective_config()
         if ctx.config is not None and hasattr(ctx.config, key):
             setattr(ctx.config, key, getattr(cfg, key))
-        await asyncio.to_thread(
-            reconcile_autoskill_schedule,
-            cfg,
-            workspace_dir=workspace_dir,
-        )
         ctx.ui.append_system(
             f"Updated {self._config_label(key)} = {self._display_value(getattr(cfg, key))}",
             style="green",
         )
+        note = await asyncio.to_thread(_apply_to_server, cfg)
+        if note is not None:
+            ctx.ui.append_system(note, style="yellow")
 
     @staticmethod
     def _config_label(key: str) -> str:
@@ -436,3 +432,30 @@ class AutoSkillsCommand(Command):
 
 
 manager.register(AutoSkillsCommand())
+
+
+def _apply_to_server(config: object) -> str | None:
+    """Ask the background agent server to reconcile every project's
+    AutoSkills cron with the new setting; a note when it could not."""
+    from ...langgraph_dev.manager import is_langgraph_dev_running
+    from ...langgraph_dev.registration import (
+        RegistrationError,
+        ServerUnusableError,
+        reconcile_autoskills,
+    )
+    from ...langgraph_dev.sdk import langgraph_dev_url
+
+    url = langgraph_dev_url(config)
+    if not is_langgraph_dev_running(base_url=url):
+        # The server applies it to each project as it sets it up.
+        return None
+    try:
+        failed = reconcile_autoskills(url=url)
+    except (RegistrationError, ServerUnusableError) as exc:
+        return (
+            "Could not ask the background agent server to apply it; each "
+            f"project follows when the server next sets it up: {exc}"
+        )
+    if failed:
+        return "AutoSkills was not rescheduled for: " + "; ".join(failed)
+    return None

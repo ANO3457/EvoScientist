@@ -60,11 +60,10 @@ def start_background(workdir: str | None, *, with_ccproxy: bool) -> None:
     from ..langgraph_dev import manager
     from ..langgraph_dev.registration import ServerUnusableError
     from ..langgraph_dev.sdk import langgraph_dev_url
-    from ..paths import Workspace, start_workspace_path
+    from ..paths import start_workspace_path
     from .commands import (
         _prepare_workdir_or_exit,
         _print_server_notices,
-        _reconcile_autoskill_schedule,
         _require_chatgpt_sign_in,
     )
 
@@ -81,8 +80,6 @@ def start_background(workdir: str | None, *, with_ccproxy: bool) -> None:
             "[dim]Starting the background agent server...[/dim]", spinner="dots"
         ):
             served = manager.serve_project(config, project, with_ccproxy=with_ccproxy)
-            if served:
-                _reconcile_autoskill_schedule(config, workspace=Workspace(project))
     except (ServerUnusableError, RuntimeError, ValueError) as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc

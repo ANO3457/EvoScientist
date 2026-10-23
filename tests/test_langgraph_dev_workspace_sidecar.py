@@ -179,7 +179,6 @@ def test_ensure_langgraph_dev_serves_another_project_from_running_server(
     assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "B") is True
 
     assert manager.is_async_subagents_available()
-    assert manager.SERVED_WORKSPACE == tmp_path / "B"
 
 
 def test_ensure_langgraph_dev_reuses_when_sidecar_missing(
@@ -200,7 +199,6 @@ def test_ensure_langgraph_dev_reuses_when_sidecar_missing(
     manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "B")
 
     assert manager.CONFIG_DRIFT_SINCE_LAUNCH is False
-    assert manager.SERVED_WORKSPACE == tmp_path / "B"
 
 
 def test_stop_langgraph_dev_removes_sidecar(tmp_path, monkeypatch, runtime_paths):
@@ -222,15 +220,6 @@ def test_stop_langgraph_dev_removes_sidecar(tmp_path, monkeypatch, runtime_paths
     monkeypatch.setattr(manager, "_PROCESS", None)
     manager.stop_langgraph_dev()
     assert not sidecar.exists()
-
-
-def test_stop_langgraph_dev_forgets_served_workspace(
-    tmp_path, monkeypatch, runtime_paths
-):
-    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "A")
-    monkeypatch.setattr(manager, "_PROCESS", None)
-    manager.stop_langgraph_dev()
-    assert manager.SERVED_WORKSPACE is None
 
 
 def test_started_server_outlives_session(tmp_path, monkeypatch, runtime_paths):
@@ -326,7 +315,6 @@ def _reuse_setup(tmp_path, monkeypatch, runtime_paths, fingerprint):
 def test_reuse_serves_registered_project(tmp_path, monkeypatch, runtime_paths):
     cfg = _reuse_setup(tmp_path, monkeypatch, runtime_paths, "fp")
     manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A")
-    assert manager.SERVED_WORKSPACE == tmp_path / "A"
 
 
 def test_reuse_sets_drift_flag_on_fingerprint_mismatch(

@@ -162,23 +162,15 @@ def _server_instance(url: str) -> str | None:
     return body.get("instance") if isinstance(body, dict) else None
 
 
-def register_folder(workspace: Workspace, *, url: str) -> None:
-    """Register *workspace* (a project root, never a run folder) with the
-    langgraph dev server at *url*.
-
-    The local secret goes only to a server that shows it holds the same one
-    (its ``instance``): another user's server on the port never gets it.
-
-    Raises :class:`OlderServerError` for a server without the registry,
-    :class:`ProjectFolderMissingError` when the server finds the folder
-    missing, and :class:`RegistrationError` for anything else that kept the
-    server from registering it.
-    """
+def _post_with_secret(url: str, path: str, body: dict, *, what: str) -> httpx.Response:
+    """POST *body* to the server at *url* with the local secret, once it
+    shows it holds the same one (its ``instance``): another user's server on
+    the port never gets it. ``OlderServerError`` for a server too old to have
+    an instance; ``RegistrationError`` when the request cannot be made."""
     from .. import paths
     from ..local_secret import HEADER, instance_of, read_local_secret
     from .sdk import LANGGRAPH_DEV_AUTH_HEADERS
 
-    url = url.rstrip("/")
     # First: a server too old to have created the secret has no instance.
     instance = _server_instance(url)
     secret = read_local_secret()
@@ -191,9 +183,9 @@ def register_folder(workspace: Workspace, *, url: str) -> None:
     if instance != instance_of(secret):
         raise RegistrationError(_other_server(url))
     try:
-        response = httpx.post(
-            f"{url}/api/workspaces",
-            json={"workspace_dir": workspace.key},
+        return httpx.post(
+            f"{url}{path}",
+            json=body,
             headers={**LANGGRAPH_DEV_AUTH_HEADERS, HEADER: secret},
             timeout=REGISTRATION_TIMEOUT,
             # Loopback: a system proxy must not intercept it.
@@ -201,9 +193,59 @@ def register_folder(workspace: Workspace, *, url: str) -> None:
         )
     except httpx.HTTPError as exc:
         raise RegistrationError(
-            f"Could not register {workspace.root} with the EvoScientist server "
-            f"at {url}: {exc}"
+            f"Could not {what} the EvoScientist server at {url}: {exc}"
         ) from exc
+
+
+def reconcile_autoskills(*, url: str) -> list[str]:
+    """Ask the server at *url* to reconcile every served project's AutoSkills
+    cron with its configuration (after ``/autoskills`` changed it); why each
+    project that failed did. ``RegistrationError`` (or ``OlderServerError``)
+    when it could not ask."""
+    url = url.rstrip("/")
+    response = _post_with_secret(url, "/api/autoskills/reconcile", {}, what="reach")
+    if response.status_code == 404:
+        raise OlderServerError()
+    if response.status_code != 200:
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        error = body.get("error") if isinstance(body, dict) else None
+        if error == "local_secret_required":
+            raise RegistrationError(_other_server(url))
+        detail = body.get("detail") if isinstance(body, dict) else None
+        reason = ": ".join(str(part) for part in (error, detail) if part)
+        raise RegistrationError(
+            f"The EvoScientist server at {url} did not reconcile AutoSkills "
+            f"(HTTP {response.status_code}{f', {reason}' if reason else ''})."
+        )
+    try:
+        failed = response.json().get("failed") or []
+    except (ValueError, AttributeError):
+        failed = []
+    return [str(reason) for reason in failed]
+
+
+def register_folder(workspace: Workspace, *, url: str) -> None:
+    """Register *workspace* (a project root, never a run folder) with the
+    langgraph dev server at *url*.
+
+    The local secret goes only to a server that shows it holds the same one
+    (its ``instance``): another user's server on the port never gets it.
+
+    Raises :class:`OlderServerError` for a server without the registry,
+    :class:`ProjectFolderMissingError` when the server finds the folder
+    missing, and :class:`RegistrationError` for anything else that kept the
+    server from registering it.
+    """
+    url = url.rstrip("/")
+    response = _post_with_secret(
+        url,
+        "/api/workspaces",
+        {"workspace_dir": workspace.key},
+        what=f"register {workspace.root} with",
+    )
     if response.status_code == 200:
         return
     try:

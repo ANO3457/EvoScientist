@@ -140,7 +140,6 @@ def _run_ensure_backend(monkeypatch, config, *, server_up=True):
         "EvoScientist.langgraph_dev.manager.is_langgraph_dev_running",
         lambda **_k: server_up,
     )
-    monkeypatch.setattr(cmds, "_reconcile_autoskill_schedule", lambda *a, **k: None)
     monkeypatch.setattr(
         cmds.console, "print", lambda *a, **k: printed.append(str(a[0]) if a else "")
     )

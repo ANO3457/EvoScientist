@@ -47,6 +47,7 @@ from EvoScientist.local_secret import (
     load_local_secret,
     require_local_secret,
 )
+from EvoScientist.memory.autoskills.schedule import AUTOSKILL_SETTINGS
 
 if TYPE_CHECKING:
     from EvoScientist.paths import Workspace
@@ -355,6 +356,23 @@ async def register_workspace(request: Request) -> JSONResponse:
     return JSONResponse({"workspace_dir": workspace.key})
 
 
+async def reconcile_autoskills(request: Request) -> JSONResponse:
+    """Reconcile every served project's AutoSkills cron with the server's
+    configuration, after a client changed it: ``{"projects": <count>,
+    "failed": [<reason>, ...]}``. Needs the local secret."""
+    if (denied := require_local_secret(request)) is not None:
+        return denied
+    try:
+        async with workspace_setup.registration_lock():
+            count, failed = await workspace_setup.reconcile_autoskills_everywhere()
+    except Exception as exc:
+        logger.exception("Could not reconcile AutoSkills.")
+        return JSONResponse(
+            {"error": "reconcile_failed", "detail": str(exc)}, status_code=500
+        )
+    return JSONResponse({"projects": count, "failed": failed})
+
+
 async def _unregister(workspace: Workspace) -> JSONResponse:
     from EvoScientist.langgraph_dev import server_crons
     from EvoScientist.langgraph_dev.registry import REGISTRY
@@ -432,7 +450,31 @@ async def patch_settings(request: Request) -> JSONResponse:
     except Exception:
         return JSONResponse({"errors": {"body": "invalid JSON"}}, status_code=400)
     status, payload = await asyncio.to_thread(settings_api.patch_settings, body)
+    if status == 200 and isinstance(body, dict) and AUTOSKILL_SETTINGS & set(body):
+        # Every project's AutoSkills cron follows the server's settings, in
+        # the background: the save does not wait for a registration in
+        # progress.
+        _reconcile_in_background()
     return JSONResponse(payload, status_code=status)
+
+
+# Settings-triggered reconciles, kept until done so they are not
+# garbage-collected.
+_reconciles: set[asyncio.Task] = set()
+
+
+def _reconcile_in_background() -> None:
+    async def reconcile() -> None:
+        try:
+            async with workspace_setup.registration_lock():
+                await workspace_setup.reconcile_autoskills_everywhere()
+        except Exception:
+            # The settings are saved; each project's next setup reconciles it.
+            logger.exception("Could not reconcile AutoSkills after a settings change.")
+
+    task = asyncio.create_task(reconcile())
+    _reconciles.add(task)
+    task.add_done_callback(_reconciles.discard)
 
 
 async def post_settings_test_key(request: Request) -> JSONResponse:
@@ -500,6 +542,7 @@ def _build_app() -> Starlette:
             Route("/api/workspaces", list_workspaces, methods=["GET"]),
             Route("/api/workspaces", register_workspace, methods=["POST"]),
             Route("/api/workspaces", unregister_workspace, methods=["DELETE"]),
+            Route("/api/autoskills/reconcile", reconcile_autoskills, methods=["POST"]),
             Route("/api/instance", get_instance, methods=["GET"]),
             Route("/api/local-secret/verify", verify_local_secret, methods=["GET"]),
             Route("/api/settings", get_settings, methods=["GET"]),

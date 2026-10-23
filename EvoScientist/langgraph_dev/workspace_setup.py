@@ -3,7 +3,8 @@
 Registration (``POST /api/workspaces``) is a setup barrier: the project's
 threads are restored and its assistants created, and only then is it
 recorded as registered, which is what the factories serve while its folder
-exists. Every step can run again; the restore runs once per project and
+exists; its AutoSkills cron is then reconciled with the configuration.
+Every step can run again; the restore runs once per project and
 server process. The
 server's start sets every registered project up again: a fresh runtime store
 has none of their assistants. Graphs are built when first needed; the chat
@@ -56,6 +57,43 @@ async def _set_up(workspace: Workspace, *, restore: bool) -> None:
             f"Could not create the workspace assistants for {workspace.root}: {exc}"
         ) from exc
     await asyncio.to_thread(registry.REGISTRY.set_registered, workspace.key, True)
+    await _reconcile_autoskills(workspace)
+
+
+async def _reconcile_autoskills(workspace: Workspace) -> None:
+    """Make *workspace*'s AutoSkills cron match the server's configuration
+    (a refused fire into a missing folder deleted it). Logged on failure: the
+    project is served either way, and its next setup tries again."""
+    from ..config import get_effective_config
+    from .server_crons import reconcile_autoskills
+
+    try:
+        config = await asyncio.to_thread(get_effective_config)
+        await reconcile_autoskills(config, [workspace])
+    except Exception:
+        logger.warning(
+            "Could not reconcile the AutoSkills schedule of %s.",
+            workspace.root,
+            exc_info=True,
+        )
+
+
+async def reconcile_autoskills_everywhere() -> tuple[int, list[str]]:
+    """Reconcile the AutoSkills cron of every served project with the
+    server's configuration, after it changed (``/autoskills``, the settings
+    API); the caller holds :func:`registration_lock`. Returns how many
+    projects were served and why each that failed did."""
+    from ..config import get_effective_config
+    from .folder_check import is_served
+    from .server_crons import reconcile_autoskills
+
+    def served() -> list[Workspace]:
+        projects = [Workspace(key) for key in registry.REGISTRY.registered()]
+        return [p for p in projects if is_served(p, registry.REGISTRY)]
+
+    config = await asyncio.to_thread(get_effective_config)
+    projects = await asyncio.to_thread(served)
+    return len(projects), await reconcile_autoskills(config, projects)
 
 
 def _warmed(task: asyncio.Task) -> None:

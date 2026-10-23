@@ -245,7 +245,6 @@ def _fresh_langgraph_dev_state(monkeypatch):
 
     for name, value in {
         "_PROCESS": None,
-        "SERVED_WORKSPACE": None,
         "SERVER_UNAVAILABLE": False,
         "CONFIG_DRIFT_SINCE_LAUNCH": False,
         "AGENT_SHELL_DRIFT": None,

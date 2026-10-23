@@ -1124,6 +1124,11 @@ def validate_setting(key: str, value: Any) -> tuple[Any, str | None]:
         value = _valid_timezone(value)
         if value is None:
             raise ValueError("unknown time zone")
+    # Empty: the system's time zone.
+    if key == "scheduler_default_timezone" and value:
+        value = _valid_timezone(value)
+        if value is None:
+            raise ValueError("unknown time zone")
     if key in ("provider", "auxiliary_provider") and (value or key == "provider"):
         from .provider_keys import PROVIDERS
 

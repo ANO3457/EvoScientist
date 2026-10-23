@@ -896,7 +896,6 @@ async def test_register_or_keep_session_reports_failed_registration(
     from EvoScientist.langgraph_dev import manager
 
     monkeypatch.setattr(manager, "ensure_langgraph_dev", lambda *a, **k: False)
-    monkeypatch.setattr(commands, "_reconcile_autoskill_schedule", lambda *a, **k: None)
 
     registered = await commands._register_or_keep_session(
         MagicMock(),
@@ -915,7 +914,6 @@ def test_ensure_async_subagent_server_warns_when_project_not_served(workspace):
             "EvoScientist.langgraph_dev.manager.ensure_langgraph_dev",
             lambda *a, **k: False,
         ),
-        patch.object(commands, "_reconcile_autoskill_schedule", lambda *a, **k: None),
         commands.console.capture() as captured,
     ):
         commands._ensure_async_subagent_server(MagicMock(), dirs=SessionDirs(workspace))

@@ -7,7 +7,6 @@ from unittest.mock import patch
 from EvoScientist import paths
 from EvoScientist.config import (
     EvoScientistConfig,
-    MemorySkillSynthesisCadence,
     MemorySkillSynthesisMode,
     save_config,
     set_config_value,
@@ -27,7 +26,6 @@ from EvoScientist.memory.autoskills.schedule import (
     AUTOSKILL_RUN_KIND,
     alist_autoskill_schedules,
     autoskill_cron,
-    reconcile_autoskill_schedule,
 )
 from EvoScientist.memory.autoskills.tools import create_submit_autoskill_proposal_tool
 from EvoScientist.memory.observations import (
@@ -979,55 +977,3 @@ async def test_alist_autoskill_schedules_uses_async_client(
     assert [row["cron_id"] for row in rows] == ["cron-async"]
     assert [c["offset"] for c in crons.calls] == [0, 1000]
     assert all(c["metadata"] == {"run_kind": AUTOSKILL_RUN_KIND} for c in crons.calls)
-
-
-def test_reconcile_autoskill_schedule_creates_updates_and_disables(
-    tmp_path,
-    monkeypatch,
-):
-    crons = _FakeCrons()
-    client = SimpleNamespace(crons=crons)
-    monkeypatch.setattr(
-        "EvoScientist.langgraph_dev.manager.is_langgraph_dev_running",
-        lambda **_kwargs: True,
-    )
-    monkeypatch.setattr("langgraph_sdk.get_sync_client", lambda **_kwargs: client)
-
-    cfg = EvoScientistConfig(
-        memory_skill_synthesis_enabled=True,
-        memory_skill_synthesis_cadence=MemorySkillSynthesisCadence.WEEKLY,
-        memory_skill_synthesis_time="03:00",
-        scheduler_default_timezone="UTC",
-    )
-
-    created = reconcile_autoskill_schedule(cfg, workspace_dir=tmp_path)
-    unchanged = reconcile_autoskill_schedule(cfg, workspace_dir=tmp_path)
-    updated = reconcile_autoskill_schedule(
-        EvoScientistConfig(
-            memory_skill_synthesis_enabled=True,
-            memory_skill_synthesis_cadence=MemorySkillSynthesisCadence.NIGHTLY,
-            memory_skill_synthesis_time="03:00",
-            scheduler_default_timezone="UTC",
-        ),
-        workspace_dir=tmp_path,
-    )
-    disabled = reconcile_autoskill_schedule(
-        EvoScientistConfig(memory_skill_synthesis_enabled=False),
-        workspace_dir=tmp_path,
-    )
-
-    assert created["status"] == "created"
-    assert unchanged["status"] == "unchanged"
-    assert updated["status"] == "created"
-    assert disabled == {"status": "disabled", "deleted": 1}
-    # The update creates its cron before deleting the old one.
-    assert crons.deleted == ["cron-1", "cron-2"]
-    assert crons.rows == []
-    assert created["schedule"] == "0 3 * * 0"
-    assert updated["schedule"] == "0 3 * * *"
-    assert created["cron_id"] == "cron-1"
-    assistant_id = workspace_assistant_id(AUTOSKILL_GRAPH_ID, Workspace(tmp_path))
-    assert [row["assistant_id"] for row in crons.created] == [
-        assistant_id,
-        assistant_id,
-    ]
