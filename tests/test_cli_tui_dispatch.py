@@ -134,11 +134,11 @@ def _run_ensure_backend(monkeypatch, config, *, server_up=True):
     printed: list[str] = []
     monkeypatch.setattr(
         "EvoScientist.langgraph_dev.manager.ensure_langgraph_dev",
-        lambda config, *, workspace_dir, run_dir=None, backend=None: None,
+        lambda config, *, workspace_dir, backend=None: True,
     )
     monkeypatch.setattr(
-        "EvoScientist.langgraph_dev.manager.is_async_subagents_available",
-        lambda: server_up,
+        "EvoScientist.langgraph_dev.manager.is_langgraph_dev_running",
+        lambda **_k: server_up,
     )
     monkeypatch.setattr(cmds, "_reconcile_autoskill_schedule", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -202,8 +202,8 @@ def test_background_agent_server_starts_even_when_async_subagents_disabled(
 
     calls = []
 
-    def fake_ensure(config, *, workspace_dir, run_dir=None, backend=None):
-        calls.append((config, workspace_dir, run_dir, backend))
+    def fake_ensure(config, *, workspace_dir, backend=None):
+        calls.append((config, workspace_dir, backend))
 
     monkeypatch.setattr(
         "EvoScientist.langgraph_dev.manager.ensure_langgraph_dev",
@@ -215,7 +215,7 @@ def test_background_agent_server_starts_even_when_async_subagents_disabled(
         config, dirs=SessionDirs(workspace), backend="langgraph_server"
     )
 
-    assert calls == [(config, workspace.root, None, "langgraph_server")]
+    assert calls == [(config, workspace.root, "langgraph_server")]
 
 
 async def test_resume_workspace_sync_runs_even_when_async_subagents_disabled(
@@ -225,8 +225,8 @@ async def test_resume_workspace_sync_runs_even_when_async_subagents_disabled(
 
     calls = []
 
-    def fake_ensure(config, *, workspace_dir, run_dir=None, backend=None):
-        calls.append((config, workspace_dir, run_dir, backend))
+    def fake_ensure(config, *, workspace_dir, backend=None):
+        calls.append((config, workspace_dir, backend))
 
     monkeypatch.setattr(
         "EvoScientist.langgraph_dev.manager.ensure_langgraph_dev",
@@ -235,13 +235,14 @@ async def test_resume_workspace_sync_runs_even_when_async_subagents_disabled(
 
     run_dir = workspace.root / "runs" / "resumed"
     config = SimpleNamespace(enable_async_subagents=False)
-    await cmds._sync_background_agent_server_workspace(
+    await cmds._register_project(
         config,
         dirs=SessionDirs(workspace, run_dir),
         backend="langgraph_server",
     )
 
-    assert calls == [(config, workspace.root, run_dir, "langgraph_server")]
+    # The server serves the project; a run names its run folder itself.
+    assert calls == [(config, workspace.root, "langgraph_server")]
 
 
 def test_cmd_interactive_dispatches_to_textual(monkeypatch, workspace):

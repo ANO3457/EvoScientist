@@ -245,9 +245,8 @@ def _fresh_langgraph_dev_state(monkeypatch):
 
     for name, value in {
         "_PROCESS": None,
-        "_PROCESS_WORKSPACE": None,
-        "_PROCESS_RUN_DIR": None,
         "SERVED_WORKSPACE": None,
+        "SERVER_UNAVAILABLE": False,
         "CONFIG_DRIFT_SINCE_LAUNCH": False,
         "AGENT_SHELL_DRIFT": None,
         "_ASYNC_SUBAGENTS_AVAILABLE": False,
@@ -455,11 +454,11 @@ def langgraph_api_env(monkeypatch):
 
 @pytest.fixture
 def no_workspace_setup(monkeypatch):
-    """Start the custom app without setting the served workspace up: that
+    """Start the custom app without setting the registered projects up: that
     needs the runtime's store, which only ``runtime_store`` provides."""
     from EvoScientist.langgraph_dev import workspace_setup
 
-    async def skip(_launcher):
+    async def skip():
         return None
 
     monkeypatch.setattr(workspace_setup, "set_up_at_start", skip)

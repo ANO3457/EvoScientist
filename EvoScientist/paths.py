@@ -228,8 +228,8 @@ def launcher_workspace() -> Workspace | None:
     (``LAUNCHER_WORKSPACE_ENV``), or ``None`` when it was started without one.
 
     The server serves every registered project and works in the server home;
-    this is only the project ``GET /api/workspace`` reports and the server
-    registers as it starts. Read once per process.
+    this is only the project ``GET /api/workspace`` reports once that client
+    registered it. Read once per process.
     """
     path = _env_path(LAUNCHER_WORKSPACE_ENV)
     if path is None:

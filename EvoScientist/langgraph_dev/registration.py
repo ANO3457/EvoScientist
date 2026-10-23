@@ -24,13 +24,28 @@ REGISTRATION_TIMEOUT = 120.0
 INSTANCE_TIMEOUT = 10.0
 
 
-class ServerUnusableError(RuntimeError):
+class _Refusal(RuntimeError):
+    """A refusal a launcher reports: ``code`` names it for programs
+    (``deploy --json``), ``fields`` holds its facts."""
+
+    code: str
+
+    def __init__(self, message: str, *, fields: dict[str, str] | None = None):
+        super().__init__(message)
+        self.fields = dict(fields or {})
+
+
+class ServerUnusableError(_Refusal):
     """This client cannot use the running server for its project: the client
     stops, or keeps the session it has."""
+
+    code = "server_unusable"
 
 
 class OlderServerError(ServerUnusableError):
     """The running server predates the project registry."""
+
+    code = "server_outdated"
 
     def __init__(self) -> None:
         super().__init__(
@@ -42,17 +57,22 @@ class OlderServerError(ServerUnusableError):
 class ProjectFolderMissingError(ServerUnusableError):
     """A folder the registry knows as a project is gone."""
 
+    code = "folder_missing"
+
     def __init__(self, root: Path) -> None:
         super().__init__(
             f"{root} used to be an EvoScientist project, and its threads and "
             "scheduled tasks are still stored. Restore the folder to keep "
-            "working in it, or create it empty to start again there."
+            "working in it, or create it empty to start again there.",
+            fields={"workspace": str(root)},
         )
 
 
-class RegistrationError(RuntimeError):
+class RegistrationError(_Refusal):
     """The server did not register the project. The client goes on without
     it, as when the server does not start."""
+
+    code = "registration_failed"
 
 
 def is_known_project(workspace: Workspace) -> bool:

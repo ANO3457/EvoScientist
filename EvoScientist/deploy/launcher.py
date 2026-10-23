@@ -96,7 +96,7 @@ class LauncherError(Exception):
     panel, other front-ends to their own error display. ``message`` is
     human-readable and actionable; ``detail`` is an optional secondary line.
     ``fields`` carries the same facts for a program, e.g. ``{"workspace": ...}``
-    or ``{"run_dir": ...}`` on ``workspace_mismatch``.
+    on ``folder_missing`` and ``workspace_mismatch``.
     """
 
     def __init__(
@@ -734,12 +734,20 @@ def _resolve_backend(
 ) -> _BackendDecision:
     """Decide whether to reuse an already-running backend or start a fresh one.
 
-    Pure decision logic: raises :class:`LauncherError` for foreign occupants,
-    workspace mismatch and sidecar port mismatches; returns ``reuse`` or
-    ``start`` otherwise. Config-fingerprint drift (configuration or version)
+    Pure decision logic: raises :class:`LauncherError` for foreign occupants
+    and sidecar port mismatches; returns ``reuse`` or ``start`` otherwise.
+    The backend serves every registered project, so the launch registers its
+    own after a reuse. Config-fingerprint drift (configuration or version)
     is a warning, not an error. A reuse carries the ownership record it was
     decided on. With ``require_record``, a server without one is a
     ``port_conflict`` instead of a reuse.
+
+    A backend started from another project is ``workspace_mismatch``: the
+    front-ends launched here (the WebUI, the desktop app behind ``deploy
+    --json``) do not name their project in every call, so they get the
+    backend's default one, the project of the client that started it
+    (``GET /api/workspace``). A client that names its project, as the CLI
+    does, shares any backend.
     """
     from ..langgraph_dev.manager import (
         _is_port_occupied,
@@ -762,10 +770,9 @@ def _resolve_backend(
             fields={"reason": "foreign"},
         )
 
-    # An EvoSci server is already there — reuse only if it serves THIS
-    # workspace, and (soft) matches the current config and version.
+    # An EvoSci server is already there — reuse it, warning when it does not
+    # match the current config and version.
     sidecar = _read_workspace_sidecar()
-    ws = Path(cfg.workspace_dir).resolve()
     if sidecar is None:
         # No ownership record for the server on this port. The single global
         # sidecar is unlinked when any EvoSci server stops, so a surviving
@@ -775,15 +782,15 @@ def _resolve_backend(
             raise LauncherError(
                 "port_conflict",
                 f"Port {cfg.backend_port} is serving a langgraph dev that EvoSci "
-                f"has no ownership record for, so its workspace is unknown.",
+                f"has no ownership record for.",
                 "Stop it, or use another port (--port).",
                 fields={"reason": "no_record"},
             )
         return _BackendDecision(action="reuse", warnings=warnings)
     # A sidecar is present. It is a single global record with no port field, so a
     # launch on another port can overwrite it. Confirm its PID actually serves
-    # THIS port before trusting its workspace — otherwise a stale record could
-    # reuse the wrong workspace, and teardown could stop the wrong server.
+    # THIS port before trusting it — otherwise a stale record could describe
+    # another server, and teardown could stop the wrong one.
     # Two servers can share a port on different interfaces, so the recorded
     # bind must also be the one the probe reached.
     if not _pid_serves_port(
@@ -799,30 +806,16 @@ def _resolve_backend(
             f"port or interface, not this one.",
             fields={"reason": "record_mismatch"},
         )
-    if Path(sidecar["workspace"]).resolve() != ws:
+    if Path(sidecar["workspace"]).resolve() != Path(cfg.workspace_dir).resolve():
         raise LauncherError(
             "workspace_mismatch",
-            f"Port {cfg.backend_port} is already serving a langgraph dev "
-            f"for a different workspace ({sidecar['workspace']}).",
-            f"Stop that EvoSci session, or launch from that workspace "
-            f"(--workdir {sidecar['workspace']}).",
+            f"Port {cfg.backend_port} is serving the backend started from "
+            f"{sidecar['workspace']}, and this front-end shows the project of "
+            "the client that started the backend.",
+            f"Launch from that folder (--workdir {sidecar['workspace']}). "
+            "Stopping the backend ends the background work of every EvoSci "
+            "session using it.",
             fields={"workspace": sidecar["workspace"]},
-        )
-    # The WebUI works in the workspace root; a server started for a
-    # ``--mode=run`` session works in one of its run folders.
-    if sidecar.get("run_dir"):
-        raise LauncherError(
-            "workspace_mismatch",
-            f"Port {cfg.backend_port} is already serving a langgraph dev "
-            f"for a run folder of this workspace ({sidecar['run_dir']}).",
-            "Stop that EvoSci --mode=run session, then launch again."
-            + (
-                " If that session already ended, stop its kept-alive server "
-                "with 'EvoSci server stop'."
-                if cfg.keepalive
-                else ""
-            ),
-            fields={"workspace": sidecar["workspace"], "run_dir": sidecar["run_dir"]},
         )
     recorded_fp = sidecar.get("config_fingerprint")
     if isinstance(recorded_fp, str) and recorded_fp != _server_config_fingerprint(
@@ -967,33 +960,35 @@ def _poll_ready(
 # --------------------------------------------------------------------------- #
 def prepare_launch_folder(ws: str) -> None:
     """:func:`~EvoScientist.langgraph_dev.registration.prepare_workdir`, a
-    refusal raised as ``folder_missing``."""
-    from ..langgraph_dev.registration import ProjectFolderMissingError, prepare_workdir
+    refusal raised as its :class:`LauncherError`."""
+    from ..langgraph_dev import registration
 
     try:
-        prepare_workdir(ws)
-    except ProjectFolderMissingError as exc:
-        raise LauncherError(
-            "folder_missing", str(exc), fields={"workspace": ws}
-        ) from exc
+        registration.prepare_workdir(ws)
+    except registration.ServerUnusableError as exc:
+        raise _launcher_error(exc, ws) from exc
 
 
 def register_launch_folder(ws: str, *, url: str) -> None:
-    """Register *ws* with the backend at *url*; a failure raised as
-    ``folder_missing``, ``server_outdated`` or ``registration_failed``."""
+    """Register *ws* with the backend at *url*; a failure raised as its
+    :class:`LauncherError` (``folder_missing``, ``server_outdated`` or
+    ``registration_failed``)."""
     from ..langgraph_dev import registration
     from ..paths import Workspace
 
     try:
         registration.register_folder(Workspace(ws), url=url)
-    except registration.ProjectFolderMissingError as exc:
-        raise LauncherError(
-            "folder_missing", str(exc), fields={"workspace": ws}
-        ) from exc
-    except registration.OlderServerError as exc:
-        raise LauncherError("server_outdated", str(exc)) from exc
-    except registration.RegistrationError as exc:
-        raise LauncherError("registration_failed", str(exc)) from exc
+    except (registration.ServerUnusableError, registration.RegistrationError) as exc:
+        raise _launcher_error(exc, ws) from exc
+
+
+def _launcher_error(exc: Exception, ws: str) -> LauncherError:
+    """*exc*'s :class:`LauncherError`, its folder spelled as launched, as the
+    ``starting`` and ``ready`` events spell it."""
+    fields = dict(exc.fields)
+    if "workspace" in fields:
+        fields["workspace"] = ws
+    return LauncherError(exc.code, str(exc), fields=fields)
 
 
 def build_launcher_config(

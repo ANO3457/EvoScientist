@@ -118,15 +118,19 @@ def _shorten_path(path: str) -> str:
 
 
 def _agent_shell_notices() -> list[str]:
-    """The agent shell's setup hint and the server drift warning, when they apply.
+    """The agent shell's setup hint, the server drift warning and a server
+    unavailable for this project, when they apply.
 
-    Both also go to the terminal or the log, which Textual hides while the
+    They also go to the terminal or the log, which Textual hides while the
     app runs, so the TUI shows them as notifications.
     """
     from ..agent_shell import setup_hint
     from ..langgraph_dev import manager as lg_manager
 
-    notices = [setup_hint(), lg_manager.AGENT_SHELL_DRIFT]
+    unavailable = (
+        lg_manager.SERVER_UNAVAILABLE_MESSAGE if lg_manager.SERVER_UNAVAILABLE else None
+    )
+    notices = [setup_hint(), lg_manager.AGENT_SHELL_DRIFT, unavailable]
     return [n for n in notices if n is not None]
 
 
@@ -953,12 +957,11 @@ def run_textual_interactive(
         def request_quit(self) -> None:
             self.action_request_quit()
 
-        async def _sync_server_to(
-            self, dirs: SessionDirs, *, message: str, new_run_dir: bool = False
-        ) -> bool:
-            """Move the background agent server to *dirs* before switching.
+        async def _sync_server_to(self, dirs: SessionDirs, *, message: str) -> bool:
+            """Register *dirs*' project with the background agent server
+            before switching.
 
-            Runs ``_move_server_or_keep_session`` behind a live timer widget
+            Runs ``_register_or_keep_session`` behind a live timer widget
             (like /compact) showing *message*, so the Textual event loop keeps
             refreshing the UI during the wait (a start, then the project's
             registration).
@@ -966,25 +969,24 @@ def run_textual_interactive(
             Raises ``ServerUnusableError`` when the server cannot be used for
             *dirs*, so the caller leaves the session as
             it is and command UIs (including channels) report the failure.
-            Returns False when the sync failed otherwise: the session can
+            Returns False when the server does not serve the project: the session can
             continue locally, but background work may be unavailable.
             """
-            from .commands import _move_server_or_keep_session
+            from .commands import _register_or_keep_session
             from .widgets.workspace_sync_widget import WorkspaceSyncWidget
 
-            if dirs == self._dirs:
+            if dirs.workspace == self._dirs.workspace:
                 return True
             sync_widget = WorkspaceSyncWidget(message)
             container = self.query_one("#chat", VerticalScroll)
             await container.mount(sync_widget)
             container.scroll_end(animate=False)
             try:
-                return await _move_server_or_keep_session(
+                return await _register_or_keep_session(
                     config,
                     target=dirs,
                     current=self._dirs,
                     backend=gateway_backend,
-                    new_run_dir=new_run_dir,
                 )
             finally:
                 await sync_widget.cleanup()
@@ -996,21 +998,9 @@ def run_textual_interactive(
             new_dirs = SessionDirs(
                 ws, create_run_dir(ws, run_name) if mode == "run" else None
             )
-            synced = await self._sync_server_to(
-                new_dirs,
-                message="Moving background agent server to the new session",
-                new_run_dir=True,
-            )
 
             # Clear all widgets except #welcome
             self.clear_chat()
-            if not synced:
-                self.append_system(
-                    "Background agent server sync failed; started the new "
-                    "session, but async subagents and EvoMemory workers may "
-                    "be unavailable.",
-                    style="yellow",
-                )
 
             _ch_mod.forget_channel_origin(self._conversation_tid)
             self._dirs = new_dirs
@@ -1041,11 +1031,12 @@ def run_textual_interactive(
                 # ``self._dirs`` changes only after the sync succeeds, so a
                 # refused sync leaves the session in its current folders.
                 if not await self._sync_server_to(
-                    dirs, message="Syncing background agent server to resumed workspace"
+                    dirs,
+                    message="Registering the resumed project with the background agent server",
                 ):
                     self.append_system(
-                        "Background agent server sync failed; resumed local "
-                        "session, but async subagents and EvoMemory workers "
+                        "The background agent server is unavailable for this "
+                        "project; resumed the session, but async subagents and EvoMemory workers "
                         "may be unavailable.",
                         style="yellow",
                     )
@@ -4500,28 +4491,28 @@ def run_textual_interactive(
                     refusal: str | None = None
                     if stored is not None:
                         effective_dirs = stored
-                        # Move the background agent server to the resumed
-                        # folders BEFORE the Textual app takes over the
+                        # Register the resumed project with the background
+                        # agent server BEFORE the Textual app takes over the
                         # terminal, so background workers and deployed
-                        # sub-agents don't work in the launch folders.
+                        # sub-agents work there.
                         from ..langgraph_dev.registration import (
                             ServerUnusableError,
                         )
-                        from .commands import _move_server_or_keep_session
+                        from .commands import _register_or_keep_session
 
                         try:
-                            if not await _move_server_or_keep_session(
+                            if not await _register_or_keep_session(
                                 config,
                                 target=stored,
                                 current=dirs,
                                 backend=gateway_backend,
                             ):
                                 resume_warning = (
-                                    "Background agent server sync failed; "
-                                    "resumed the session, but async subagents "
+                                    "The background agent server is unavailable "
+                                    "for this project; resumed the session, but async subagents "
                                     "and EvoMemory workers may be unavailable."
                                 )
-                        except ServerUnusableError as exc:
+                        except (ServerUnusableError, OSError) as exc:
                             refusal = str(exc)
                     if refusal is not None:
                         # Fall through to the ``effective_thread_id is None``

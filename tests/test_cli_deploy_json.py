@@ -590,22 +590,16 @@ def test_record_for_another_port_is_port_conflict(h, capsys):
     assert lines[-1]["detail"]["reason"] == "record_mismatch"
 
 
-def test_other_workspace_is_workspace_conflict(h, capsys):
+def test_backend_started_from_another_project_is_workspace_conflict(h, capsys):
+    """The app gets the backend's default project from calls that name none."""
     h.occupied = True
     h.sidecar = {"workspace": str(h.tmp_path / "other"), "pid": 1}
     code, lines = h.run(capsys)
     assert code == 1
     assert lines[-1]["code"] == "workspace_conflict"
     assert lines[-1]["detail"]["workspace"] == str(h.tmp_path / "other")
+    assert "hint" in lines[-1]["detail"]
     assert h.started is None
-
-
-def test_run_folder_session_is_workspace_conflict_with_run_dir(h, capsys):
-    run_dir = str(h.tmp_path / "ws" / "runs" / "20260930_120000")
-    _attach(h, run_dir=run_dir)
-    _, lines = h.run(capsys)
-    assert lines[-1]["code"] == "workspace_conflict"
-    assert lines[-1]["detail"]["run_dir"] == run_dir
 
 
 @pytest.mark.parametrize("problem", [None, "The saved sign-in is corrupt."])

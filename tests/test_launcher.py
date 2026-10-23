@@ -68,49 +68,34 @@ def test_resolve_backend_foreign_occupant_is_port_conflict(monkeypatch):
     assert ei.value.fields == {"reason": "foreign"}
 
 
-def test_resolve_backend_other_workspace_is_mismatch(monkeypatch):
+def test_resolve_backend_other_project_is_mismatch(monkeypatch):
+    """The front-ends launched here get the backend's default project."""
     _patch_backend_probes(
-        monkeypatch,
-        occupied=True,
-        running=True,
-        sidecar={"workspace": "/tmp/wsB"},
+        monkeypatch, occupied=True, running=True, sidecar={"workspace": "/tmp/wsB"}
     )
     with pytest.raises(lm.LauncherError) as ei:
         lm._resolve_backend(_cfg(workspace_dir="/tmp/wsA"), object())
     assert ei.value.code == "workspace_mismatch"
-
-
-def test_resolve_backend_run_folder_server_is_mismatch(monkeypatch):
-    """The WebUI works in the root; a server pinned to a run folder is refused."""
-    _patch_backend_probes(
-        monkeypatch,
-        occupied=True,
-        running=True,
-        sidecar={
-            "workspace": "/tmp/wsA",
-            "run_dir": "/tmp/wsA/runs/20260930_120000",
-        },
-    )
-    with pytest.raises(lm.LauncherError) as ei:
-        lm._resolve_backend(_cfg(workspace_dir="/tmp/wsA"), object())
-    assert ei.value.code == "workspace_mismatch"
-    assert "runs/20260930_120000" in ei.value.message
+    assert ei.value.fields == {"workspace": "/tmp/wsB"}
     assert "server stop" not in ei.value.detail
 
 
-def test_resolve_backend_run_folder_hint_covers_kept_alive_server(monkeypatch):
+def test_resolve_backend_older_run_folder_record_reuses(monkeypatch):
+    """A record from before the shared backend may name a run folder of the
+    same project."""
     _patch_backend_probes(
         monkeypatch,
         occupied=True,
         running=True,
         sidecar={
             "workspace": "/tmp/wsA",
-            "run_dir": "/tmp/wsA/runs/20260930_120000",
+            "run_dir": "/tmp/wsA/runs/x",
+            "config_fingerprint": "fp-now",
         },
     )
-    with pytest.raises(lm.LauncherError) as ei:
-        lm._resolve_backend(_cfg(workspace_dir="/tmp/wsA", keepalive=True), object())
-    assert "EvoSci server stop" in ei.value.detail
+    assert (
+        lm._resolve_backend(_cfg(workspace_dir="/tmp/wsA"), object()).action == "reuse"
+    )
 
 
 def test_resolve_backend_same_workspace_reuses(monkeypatch):
@@ -177,34 +162,26 @@ def test_resolve_backend_record_less_server_is_port_conflict_when_required(
     assert ei.value.fields == {"reason": "no_record"}
 
 
-def test_resolve_backend_takes_a_backend_target(monkeypatch):
+@pytest.mark.parametrize(
+    ("recorded", "action"), [("/tmp/wsA", "reuse"), ("/tmp/wsB", None)]
+)
+def test_resolve_backend_takes_a_backend_target(monkeypatch, recorded, action):
     """A caller without a front-end passes only the backend fields."""
     _patch_backend_probes(
-        monkeypatch, occupied=True, running=True, sidecar={"workspace": "/tmp/wsB"}
+        monkeypatch,
+        occupied=True,
+        running=True,
+        sidecar={"workspace": recorded, "config_fingerprint": "fp-now"},
     )
     target = lm.BackendTarget(
         workspace_dir="/tmp/wsA", backend_host="127.0.0.1", backend_port=6174
     )
-    with pytest.raises(lm.LauncherError) as ei:
-        lm._resolve_backend(target, object())
-    assert ei.value.code == "workspace_mismatch"
-
-
-def test_workspace_mismatch_carries_the_workspace(monkeypatch):
-    _patch_backend_probes(
-        monkeypatch, occupied=True, running=True, sidecar={"workspace": "/tmp/wsB"}
-    )
-    with pytest.raises(lm.LauncherError) as ei:
-        lm._resolve_backend(_cfg(workspace_dir="/tmp/wsA"), object())
-    assert ei.value.fields == {"workspace": "/tmp/wsB"}
-
-
-def test_run_folder_mismatch_carries_the_run_folder(monkeypatch):
-    sidecar = {"workspace": "/tmp/wsA", "run_dir": "/tmp/wsA/runs/20260930_120000"}
-    _patch_backend_probes(monkeypatch, occupied=True, running=True, sidecar=sidecar)
-    with pytest.raises(lm.LauncherError) as ei:
-        lm._resolve_backend(_cfg(workspace_dir="/tmp/wsA"), object())
-    assert ei.value.fields == sidecar
+    if action is None:
+        with pytest.raises(lm.LauncherError) as ei:
+            lm._resolve_backend(target, object())
+        assert ei.value.code == "workspace_mismatch"
+    else:
+        assert lm._resolve_backend(target, object()).action == action
 
 
 def test_launcher_error_fields_default_to_empty():
@@ -753,8 +730,9 @@ def _patch_for_evosci_occupant(monkeypatch, sidecar, occupied=(6174,)):
     monkeypatch.setattr(lgm, "start_langgraph_dev", lambda **k: _FakeProc())
 
 
-def test_start_raises_on_workspace_mismatch(monkeypatch):
-    """A server for a different workspace is refused; no second backend starts."""
+def test_start_refuses_server_started_for_another_project(monkeypatch):
+    """The WebUI shows the project of the client that started the backend;
+    no second backend starts."""
     _patch_for_evosci_occupant(monkeypatch, sidecar={"workspace": "/tmp/wsB"})
     started: list = []
     monkeypatch.setattr(lgm, "start_langgraph_dev", lambda **k: started.append(k))
@@ -762,7 +740,24 @@ def test_start_raises_on_workspace_mismatch(monkeypatch):
     with pytest.raises(lm.LauncherError) as ei:
         launcher.start()
     assert ei.value.code == "workspace_mismatch"
+    assert ei.value.fields == {"workspace": "/tmp/wsB"}
     assert started == []
+
+
+def test_start_reuses_server_started_from_same_project(monkeypatch):
+    from EvoScientist.langgraph_dev import registration
+
+    _patch_for_evosci_occupant(monkeypatch, sidecar={"workspace": "/tmp/wsA"})
+    registered: list = []
+    monkeypatch.setattr(
+        registration,
+        "register_folder",
+        lambda workspace, *, url: registered.append(workspace.root),
+    )
+    launcher = lm.WebUILauncher(object(), _cfg(workspace_dir="/tmp/wsA"), _FakeRunner())
+
+    assert not launcher.start().backend_started
+    assert registered == [Path("/tmp/wsA")]
 
 
 def test_start_warns_when_webui_port_occupied(monkeypatch):
@@ -1218,7 +1213,7 @@ def test_build_launcher_config_blank_host_falls_back_to_loopback(monkeypatch):
 def test_backend_failure_releases_the_in_use_marker(monkeypatch, tmp_path):
     _node, calls = _installed_env(monkeypatch, tmp_path)
 
-    def broken_backend(*_a):
+    def broken_backend(*_a, **_k):
         raise lm.LauncherError("backend_start_failed", "boom")
 
     monkeypatch.setattr(lm, "_resolve_backend", broken_backend)

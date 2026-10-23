@@ -12,8 +12,8 @@ The server is the same one ``EvoSci`` / ``EvoSci serve`` start in the
 background.
 
 ``--json`` is for a program that starts the server (the desktop app): JSON
-event lines on stdout, an attach to a running server for the same workspace,
-and a stop when stdin closes. :mod:`.json_mode` documents the events.
+event lines on stdout, an attach to a running server started from the same
+project, and a stop when stdin closes. :mod:`.json_mode` documents the events.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def deploy(
         typer.Option(
             "--json",
             help="Print one JSON event per line, attach to a running backend "
-            "for the same workspace, and stop when stdin closes",
+            "started from the same project, and stop when stdin closes",
         ),
     ] = False,
 ):
@@ -160,7 +160,7 @@ def deploy(
                     # Only when the recorded pid verifiably serves THIS port, so a
                     # stale or other-port record is never blamed.
                     console.print(
-                        f"[dim]It was started for workspace "
+                        f"[dim]It was started from "
                         f"{sidecar.get('workspace')} (pid {sidecar.get('pid')}). "
                         f"Stop it with [bold]EvoSci server stop[/bold].[/dim]"
                     )
@@ -257,8 +257,7 @@ def deploy(
             console.print(f"[red]langgraph dev startup failed:[/red] {exc}")
             raise typer.Exit(1) from exc
 
-    # The server registered the project as it started, but logs a failure
-    # there and serves the others; registering it again reports it here.
+    # The server serves the projects its clients register, this one too.
     try:
         register_folder(Workspace(ws), url=_base_url(effective_port, effective_host))
     except (ServerUnusableError, RegistrationError) as exc:

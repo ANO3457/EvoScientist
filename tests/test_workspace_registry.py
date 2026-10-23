@@ -189,38 +189,20 @@ async def test_register_workspace_refuses_missing_folder(
 
 
 async def test_server_start_sets_registered_projects_up(
-    projects, setup_calls, workspace, tmp_path
+    projects, setup_calls, tmp_path
 ):
-    """The checkpointer restored every project's threads already, and only
-    the start folder's chat graph is built ahead; a project whose folder is
-    gone stays registered."""
+    """The checkpointer restored every project's threads already; a project
+    whose folder is gone stays registered."""
     other = Workspace(tmp_path / "other")
     other.root.mkdir()
     gone = Workspace(tmp_path / "gone")
     for key in (other.key, gone.key):
         projects.set_registered(key, True)
 
-    await workspace_setup.set_up_at_start(workspace)
-
-    assert setup_calls == [
-        ("assistants", other.key),
-        ("assistants", workspace.key),
-        ("warm up", workspace.key),
-    ]
-    assert set(projects.registered()) == {other.key, gone.key, workspace.key}
-
-
-async def test_server_start_without_launcher_sets_registered_projects_up(
-    projects, setup_calls, tmp_path
-):
-    """A server started without a project (not by an EvoScientist client)."""
-    other = Workspace(tmp_path / "other")
-    other.root.mkdir()
-    projects.set_registered(other.key, True)
-
-    await workspace_setup.set_up_at_start(None)
+    await workspace_setup.set_up_at_start()
 
     assert setup_calls == [("assistants", other.key)]
+    assert set(projects.registered()) == {other.key, gone.key}
 
 
 async def test_warm_up_builds_chat_graph_in_background(monkeypatch, workspace):

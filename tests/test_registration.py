@@ -258,9 +258,11 @@ def reused_server(monkeypatch, runtime_paths):
     from EvoScientist.langgraph_dev import manager
 
     monkeypatch.setattr(manager, "_PROCESS", None)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", None)
-    monkeypatch.setattr(manager, "_PROCESS_RUN_DIR", None)
-    monkeypatch.setattr(manager, "_ensure_langgraph_dev_locked", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        manager,
+        "_ensure_langgraph_dev_locked",
+        lambda *_a, **_k: manager._Found(available=True),
+    )
     monkeypatch.setattr(manager, "_ASYNC_SUBAGENTS_AVAILABLE", True)
     monkeypatch.setattr(manager, "needs_langgraph_dev", lambda *_a, **_k: True)
     cfg = manager.EvoScientistConfig()
@@ -282,6 +284,7 @@ def test_ensure_registers_project_after_reuse(monkeypatch, reused_server, tmp_pa
 
     assert registered == [(Workspace(tmp_path), "http://127.0.0.1:6174")]
     assert manager.is_async_subagents_available()
+    assert manager.SERVED_WORKSPACE == Workspace(tmp_path).root
 
 
 def test_ensure_failed_registration_counts_as_server_unavailable(
@@ -303,13 +306,72 @@ def test_ensure_failed_registration_counts_as_server_unavailable(
     assert "setup failed" in caplog.text
 
 
-def test_ensure_older_server_stops_client(monkeypatch, reused_server, tmp_path):
+def test_ensure_missing_folder_keeps_current_session_server(
+    monkeypatch, reused_server, tmp_path
+):
+    """A session that stays where it is keeps the server serving its
+    project."""
+    from EvoScientist.langgraph_dev import manager
+
+    def missing(workspace, *, url):
+        raise ProjectFolderMissingError(workspace.root)
+
+    monkeypatch.setattr(registration, "register_folder", missing)
+    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
+
+    with pytest.raises(ProjectFolderMissingError):
+        manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
+    assert manager.is_async_subagents_available()
+    assert manager.SERVED_WORKSPACE == tmp_path / "current"
+
+
+def test_ensure_unusable_lock_is_failed_start(monkeypatch, reused_server, tmp_path):
+    from EvoScientist.langgraph_dev import manager
+
+    class _Lock:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def acquire(self):
+            raise PermissionError("read-only")
+
+    monkeypatch.setattr(manager, "FileLock", _Lock)
+    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
+
+    assert manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path) is False
+    assert manager.SERVER_UNAVAILABLE
+    assert manager.SERVED_WORKSPACE is None
+
+
+@pytest.mark.parametrize("error", [PermissionError("pid file"), ValueError("bug")])
+def test_ensure_start_error_leaves_no_server(
+    monkeypatch, reused_server, tmp_path, error
+):
+    """The session must not keep the server it had before the call."""
+    from EvoScientist.langgraph_dev import manager
+
+    def broken(*_a, **_k):
+        raise error
+
+    monkeypatch.setattr(manager, "_ensure_langgraph_dev_locked", broken)
+    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
+
+    with pytest.raises(type(error)):
+        manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
+    assert not manager.is_async_subagents_available()
+    assert manager.SERVED_WORKSPACE is None
+
+
+def test_ensure_older_server_serves_no_project(monkeypatch, reused_server, tmp_path):
+    """The client stops, or a session that stays where it is goes on
+    without the server."""
     from EvoScientist.langgraph_dev import manager
 
     def older(_workspace, *, url):
         raise OlderServerError()
 
     monkeypatch.setattr(registration, "register_folder", older)
+    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
 
     with pytest.raises(OlderServerError):
         manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
@@ -347,8 +409,8 @@ def test_cli_refusal_prints_path_with_brackets(monkeypatch, tmp_path):
 
 
 async def test_session_move_refuses_known_project_with_missing_folder(tmp_path):
-    """``/new`` and ``/resume``, whatever the backend."""
-    from EvoScientist.cli.commands import _move_server_or_keep_session
+    """``/resume`` into another project, whatever the backend."""
+    from EvoScientist.cli.commands import _register_or_keep_session
     from EvoScientist.langgraph_dev.registry import Registry
     from EvoScientist.paths import SessionDirs
 
@@ -357,7 +419,7 @@ async def test_session_move_refuses_known_project_with_missing_folder(tmp_path):
     here = SessionDirs(Workspace(tmp_path))
 
     with pytest.raises(ProjectFolderMissingError):
-        await _move_server_or_keep_session(
+        await _register_or_keep_session(
             object(), target=SessionDirs(gone), current=here
         )
     assert not gone.root.exists()
@@ -404,3 +466,49 @@ def test_json_mode_reports_launcher_registration_codes():
     with pytest.raises(_Failure) as raised, _launcher_failures():
         raise LauncherError("server_outdated", "stop it")
     assert raised.value.code == "server_outdated"
+
+
+async def test_session_move_reports_folder_it_cannot_create(monkeypatch, tmp_path):
+    """Not a server failure: the session cannot work there."""
+    from EvoScientist.cli import commands
+    from EvoScientist.paths import SessionDirs
+
+    def unwritable(_path):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(registration, "prepare_workdir", unwritable)
+
+    with pytest.raises(PermissionError):
+        await commands._register_or_keep_session(
+            object(),
+            target=SessionDirs(Workspace(tmp_path / "other")),
+            current=SessionDirs(Workspace(tmp_path)),
+        )
+
+
+def test_tui_notices_name_unavailable_server(monkeypatch):
+    """The terminal is hidden while the TUI runs."""
+    from EvoScientist.cli.tui_interactive import _agent_shell_notices
+    from EvoScientist.langgraph_dev import manager
+
+    monkeypatch.setattr(manager, "SERVER_UNAVAILABLE", True)
+    assert manager.SERVER_UNAVAILABLE_MESSAGE in _agent_shell_notices()
+    monkeypatch.setattr(manager, "SERVER_UNAVAILABLE", False)
+    assert manager.SERVER_UNAVAILABLE_MESSAGE not in _agent_shell_notices()
+
+
+def test_ensure_unexpected_registration_error_leaves_no_server(
+    monkeypatch, reused_server, tmp_path
+):
+    from EvoScientist.langgraph_dev import manager
+
+    def broken(_workspace, *, url):
+        raise ValueError("bug")
+
+    monkeypatch.setattr(registration, "register_folder", broken)
+    monkeypatch.setattr(manager, "SERVED_WORKSPACE", tmp_path / "current")
+
+    with pytest.raises(ValueError, match="bug"):
+        manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
+    assert not manager.is_async_subagents_available()
+    assert manager.SERVED_WORKSPACE is None

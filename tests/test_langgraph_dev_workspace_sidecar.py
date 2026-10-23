@@ -1,17 +1,9 @@
-"""Tests for the workspace-fingerprint sidecar protocol.
+"""Tests for the server's ownership record (the workspace sidecar) and the
+reuse of a running server.
 
-When langgraph dev is reused across processes (e.g., TUI / serve detects
-a deploy-started instance on the configured port), the workspace recorded
-in the sidecar JSON must match the workspace requested by the caller. On
-mismatch we raise ``WorkspaceMismatchError`` so callers can surface a
-clear refuse-with-hint error rather than silently operating on the wrong
-project's files.
-
-Background: ``EvoSci deploy --workdir /A`` running + ``EvoSci`` (TUI) in
-/B previously took the "reuse externally-managed langgraph dev" branch
-in ``ensure_langgraph_dev`` and only logged a warning. The deployed
-sub-agents stayed pinned to /A while the TUI's main agent ran in /B,
-breaking ``task()`` delegations.
+The server serves every registered project, so a client reuses any
+EvoScientist server on the port and registers its own project; the record
+says what the server was launched with, for the drift warnings.
 """
 
 from __future__ import annotations
@@ -110,10 +102,8 @@ def test_read_workspace_sidecar_returns_none_on_corrupt_json(
 def test_read_workspace_sidecar_returns_none_on_wrong_schema(
     payload, tmp_path, monkeypatch, runtime_paths
 ):
-    """JSON that parses but doesn't match the expected schema must degrade
-    to None — otherwise the reuse branch's ``Path(sidecar["workspace"]).resolve()``
-    would raise KeyError/TypeError or silently resolve to cwd, surfacing as
-    an unhandled exception or producing a misleading match check."""
+    """JSON that parses but doesn't match the expected schema degrades to
+    None: readers show ``workspace`` as a path."""
     sidecar = tmp_path / "schema.json"
     sidecar.write_text(payload)
     monkeypatch.setattr(
@@ -171,123 +161,32 @@ def test_write_workspace_sidecar_records_the_data_and_config_folders(
     assert data["config_dir"] == str(tmp_path / "config" / "evoscientist")
 
 
-def test_workspace_mismatch_error_is_runtime_error_subclass():
-    assert issubclass(manager.WorkspaceMismatchError, RuntimeError)
-
-
-def test_ensure_langgraph_dev_refuses_on_workspace_mismatch(
+def test_ensure_langgraph_dev_serves_another_project_from_running_server(
     tmp_path, monkeypatch, runtime_paths
 ):
-    """Cross-process reuse with sidecar workspace ≠ requested → raises."""
-    ws_a = tmp_path / "A"
-    ws_b = tmp_path / "B"
+    """A server started from A serves B once B is registered."""
     monkeypatch.setattr(
         manager,
         "RUNTIME",
         dataclasses.replace(runtime_paths, workspace_sidecar=tmp_path / "ws.json"),
     )
-    manager._write_workspace_sidecar(workspace_dir=ws_a, pid=99999)
-
+    manager._write_workspace_sidecar(workspace_dir=tmp_path / "A", pid=99999)
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: True)
     monkeypatch.setattr(manager, "_PROCESS", None)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", None)
 
     cfg = manager.EvoScientistConfig()
     cfg.enable_async_subagents = True
-    with pytest.raises(manager.WorkspaceMismatchError) as exc:
-        manager.ensure_langgraph_dev(cfg, workspace_dir=ws_b)
-    assert str(ws_a.resolve()) in str(exc.value)
-    assert str(ws_b) in str(exc.value)
-    # Without keepalive a mismatch means a live session — no stop suggestion,
-    # keeping the message identical to pre-keepalive behavior.
-    assert "EvoSci server stop" not in str(exc.value)
+    assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "B") is True
 
-
-def test_mismatch_error_suggests_server_stop_under_keepalive(
-    tmp_path, monkeypatch, runtime_paths
-):
-    """With keepalive on, the leftover may be ownerless — the error points at
-    `EvoSci server stop`, which kills AND cleans the records (a raw kill
-    would leave stale files behind)."""
-    ws_a = tmp_path / "A"
-    ws_b = tmp_path / "B"
-    monkeypatch.setattr(
-        manager,
-        "RUNTIME",
-        dataclasses.replace(runtime_paths, workspace_sidecar=tmp_path / "ws.json"),
-    )
-    manager._write_workspace_sidecar(workspace_dir=ws_a, pid=99999)
-
-    monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: True)
-    monkeypatch.setattr(manager, "_PROCESS", None)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", None)
-
-    cfg = manager.EvoScientistConfig()
-    cfg.enable_async_subagents = True
-    cfg.langgraph_dev_keepalive = True
-    with pytest.raises(manager.WorkspaceMismatchError) as exc:
-        manager.ensure_langgraph_dev(cfg, workspace_dir=ws_b)
-    assert "EvoSci server stop" in str(exc.value)
-
-
-def test_ensure_langgraph_dev_refuses_on_mismatch_with_stale_process(
-    tmp_path, monkeypatch, runtime_paths
-):
-    """A non-None but dead ``_PROCESS`` handle must NOT short-circuit the
-    sidecar check. Regression for the case where our subprocess exited and a
-    different langgraph dev rebound the port."""
-    ws_a = tmp_path / "A"
-    ws_b = tmp_path / "B"
-    monkeypatch.setattr(
-        manager,
-        "RUNTIME",
-        dataclasses.replace(runtime_paths, workspace_sidecar=tmp_path / "ws.json"),
-    )
-    manager._write_workspace_sidecar(workspace_dir=ws_a, pid=99999)
-
-    class _DeadProc:
-        def poll(self):
-            return 1  # non-None → process has exited
-
-    monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: True)
-    monkeypatch.setattr(manager, "_PROCESS", _DeadProc())
-    # _PROCESS_WORKSPACE matches ws_b so the earlier owned-restart branch (which
-    # also gates on _PROCESS.poll() is None) doesn't fire on this dead handle.
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", ws_b)
-
-    cfg = manager.EvoScientistConfig()
-    cfg.enable_async_subagents = True
-    with pytest.raises(manager.WorkspaceMismatchError):
-        manager.ensure_langgraph_dev(cfg, workspace_dir=ws_b)
-
-
-def test_ensure_langgraph_dev_reuses_when_workspace_matches(
-    tmp_path, monkeypatch, runtime_paths
-):
-    """Cross-process reuse with matching sidecar workspace → no raise."""
-    ws_a = tmp_path / "A"
-    monkeypatch.setattr(
-        manager,
-        "RUNTIME",
-        dataclasses.replace(runtime_paths, workspace_sidecar=tmp_path / "ws.json"),
-    )
-    manager._write_workspace_sidecar(workspace_dir=ws_a, pid=99999)
-
-    monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: True)
-    monkeypatch.setattr(manager, "_PROCESS", None)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", None)
-
-    cfg = manager.EvoScientistConfig()
-    cfg.enable_async_subagents = True
-    # Should NOT raise.
-    manager.ensure_langgraph_dev(cfg, workspace_dir=ws_a)
+    assert manager.is_async_subagents_available()
+    assert manager.SERVED_WORKSPACE == tmp_path / "B"
 
 
 def test_ensure_langgraph_dev_reuses_when_sidecar_missing(
     tmp_path, monkeypatch, runtime_paths
 ):
-    """Backward compat: pre-feature langgraph dev (no sidecar) falls back to
-    the existing log-warning behavior rather than refusing."""
+    """A server without an ownership record is reused without the drift
+    checks; the registration tells an older release apart."""
     monkeypatch.setattr(
         manager,
         "RUNTIME",
@@ -295,14 +194,13 @@ def test_ensure_langgraph_dev_reuses_when_sidecar_missing(
     )
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: True)
     monkeypatch.setattr(manager, "_PROCESS", None)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", None)
 
     cfg = manager.EvoScientistConfig()
     cfg.enable_async_subagents = True
-    # Should NOT raise — degrades to the prior reuse-with-warning branch.
     manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "B")
-    # Nothing says which workspace's store it holds.
-    assert manager.SERVED_WORKSPACE is None
+
+    assert manager.CONFIG_DRIFT_SINCE_LAUNCH is False
+    assert manager.SERVED_WORKSPACE == tmp_path / "B"
 
 
 def test_stop_langgraph_dev_removes_sidecar(tmp_path, monkeypatch, runtime_paths):
@@ -344,7 +242,6 @@ def test_keepalive_skips_atexit_registration(tmp_path, monkeypatch, runtime_path
     )
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: False)
     monkeypatch.setattr(manager, "_PROCESS", None)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", None)
     fake_proc = object()
     monkeypatch.setattr(manager, "start_langgraph_dev", lambda **kw: fake_proc)
     registered = []
@@ -356,11 +253,11 @@ def test_keepalive_skips_atexit_registration(tmp_path, monkeypatch, runtime_path
     assert cfg.langgraph_dev_keepalive is False, "keepalive must default to off"
     cfg.enable_async_subagents = True
     cfg.langgraph_dev_keepalive = True
-    assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A") is fake_proc
+    assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A")
     assert registered == []
 
     cfg.langgraph_dev_keepalive = False
-    assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A") is fake_proc
+    assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A")
     assert registered
     assert registered[0][0] is manager.stop_langgraph_dev
 
@@ -415,13 +312,12 @@ def _reuse_setup(tmp_path, monkeypatch, runtime_paths, fingerprint):
     )
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: True)
     monkeypatch.setattr(manager, "_PROCESS", None)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", None)
     cfg = manager.EvoScientistConfig()
     cfg.enable_async_subagents = True
     return cfg
 
 
-def test_reuse_confirms_workspace_from_sidecar(tmp_path, monkeypatch, runtime_paths):
+def test_reuse_serves_registered_project(tmp_path, monkeypatch, runtime_paths):
     cfg = _reuse_setup(tmp_path, monkeypatch, runtime_paths, "fp")
     manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A")
     assert manager.SERVED_WORKSPACE == tmp_path / "A"
@@ -450,7 +346,7 @@ def test_reuse_sets_drift_flag_for_older_stripped_server(
         cfg, workspace_dir=tmp_path / "A", backend="langgraph_server"
     )
 
-    assert reused is None
+    assert reused is True
     assert manager.CONFIG_DRIFT_SINCE_LAUNCH is True
     assert manager.is_async_subagents_available() is True
 
@@ -469,7 +365,7 @@ def test_reuse_sets_drift_flag_on_version_change(tmp_path, monkeypatch, runtime_
     monkeypatch.setattr(manager, "stop_langgraph_dev", lambda *a: stopped.append(a))
 
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.3.5")
-    assert manager.ensure_langgraph_dev(cfg2, workspace_dir=tmp_path / "A") is None
+    assert manager.ensure_langgraph_dev(cfg2, workspace_dir=tmp_path / "A") is True
 
     assert manager.CONFIG_DRIFT_SINCE_LAUNCH is True
     assert manager.is_async_subagents_available() is True
@@ -500,7 +396,6 @@ def test_started_server_recorded_for_next_version(tmp_path, monkeypatch, runtime
     monkeypatch.setattr(manager, "_wait_for_port_bindable", lambda *_a, **_kw: True)
     monkeypatch.setattr(subprocess, "Popen", _popen)
     monkeypatch.setattr(manager, "_PROCESS", None)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", None)
     cfg = manager.EvoScientistConfig()
     cfg.enable_async_subagents = True
     cfg.langgraph_dev_keepalive = True
@@ -512,7 +407,7 @@ def test_started_server_recorded_for_next_version(tmp_path, monkeypatch, runtime
 
     monkeypatch.setattr(manager, "_PROCESS", None)
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.3.6")
-    assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A") is None
+    assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A") is True
     assert manager.CONFIG_DRIFT_SINCE_LAUNCH is True
     assert len(spawned) == 1
 

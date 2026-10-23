@@ -104,41 +104,38 @@ async def test_ensure_workspace_assistants_repairs_other_fields(
     assert repaired["name"] == f"EvoScientist · {tmp_path.name}"
 
 
-def test_server_start_sets_launcher_project_up(monkeypatch, tmp_path):
+def test_server_lifespan_runs_set_up_at_start(monkeypatch):
     from starlette.testclient import TestClient
 
-    from EvoScientist import paths
     from EvoScientist.langgraph_dev import workspace_setup
     from EvoScientist.langgraph_dev.http import app
 
-    set_up = []
+    started = []
 
-    async def record(launcher):
-        set_up.append(launcher)
+    async def record():
+        started.append(True)
 
-    monkeypatch.setenv(paths.LAUNCHER_WORKSPACE_ENV, str(tmp_path))
     monkeypatch.setattr(workspace_setup, "set_up_at_start", record)
     with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)):
         pass
-    assert set_up == [Workspace(tmp_path)]
+    assert started == [True]
 
 
-def test_server_start_survives_launcher_setup_failure(monkeypatch, tmp_path, caplog):
+def test_server_start_survives_project_setup_failure(monkeypatch, tmp_path, caplog):
     """One project never stops a server that serves the others; the failure
-    is logged and the project stays unregistered."""
+    is logged and the project stays registered."""
     from starlette.testclient import TestClient
 
-    from EvoScientist import paths
     from EvoScientist.langgraph_dev import assistants, registry
     from EvoScientist.langgraph_dev.http import app
 
     async def fail(_workspace):
         raise ValueError("store unavailable")
 
-    monkeypatch.setenv(paths.LAUNCHER_WORKSPACE_ENV, str(tmp_path))
+    registry.REGISTRY.set_registered(Workspace(tmp_path).key, True)
     monkeypatch.setattr(assistants, "ensure_workspace_assistants", fail)
     with TestClient(app, base_url="http://127.0.0.1"):
         pass
 
     assert "store unavailable" in caplog.text
-    assert not registry.REGISTRY.is_registered(Workspace(tmp_path).key)
+    assert registry.REGISTRY.is_registered(Workspace(tmp_path).key)

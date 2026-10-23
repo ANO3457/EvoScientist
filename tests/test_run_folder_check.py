@@ -850,73 +850,91 @@ def test_server_gateway_run_config_forwards_target_folders(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# The server moves with the session
+# Sessions register their project
 # ---------------------------------------------------------------------------
 
 
-async def _sync_order(workspace, *, pinned_elsewhere: bool) -> list[str]:
-    """Sync the server to ``workspace`` and return what ran, in order."""
+async def test_register_or_keep_session_same_project_registers_nothing(workspace):
+    """A run folder of the project the server already serves."""
+    from unittest.mock import AsyncMock
+
     from EvoScientist.cli import commands
 
-    order: list[str] = []
-    with (
-        patch.object(
-            commands, "_wait_for_memory_workers", lambda **_k: order.append("memory")
-        ),
-        patch(
-            "EvoScientist.langgraph_dev.manager.owned_server_pinned_elsewhere",
-            lambda *a, **k: pinned_elsewhere,
-        ),
-        patch(
-            "EvoScientist.langgraph_dev.manager.ensure_langgraph_dev",
-            lambda *a, **k: order.append("move"),
-        ),
-        patch.object(commands, "_reconcile_autoskill_schedule", lambda *a, **k: None),
-    ):
-        await commands._sync_background_agent_server_workspace(
-            MagicMock(), dirs=SessionDirs(workspace)
+    register = AsyncMock()
+    with patch.object(commands, "_register_project", register):
+        assert await commands._register_or_keep_session(
+            MagicMock(),
+            target=SessionDirs(workspace, workspace.runs_dir / RUN),
+            current=SessionDirs(workspace),
         )
-    return order
+
+    register.assert_not_awaited()
 
 
-async def test_server_move_waits_for_memory_work(workspace):
-    """Moving the pinned server stops runs in flight, so the previous
-    session's memory work finishes before it moves."""
-    assert await _sync_order(workspace, pinned_elsewhere=True) == ["memory", "move"]
+async def test_register_or_keep_session_registers_other_project(workspace, tmp_path):
+    from unittest.mock import AsyncMock
+
+    from EvoScientist.cli import commands
+
+    other = SessionDirs(Workspace(tmp_path / "other"))
+    register = AsyncMock()
+    with patch.object(commands, "_register_project", register):
+        assert await commands._register_or_keep_session(
+            MagicMock(), target=other, current=SessionDirs(workspace)
+        )
+
+    assert register.await_args.kwargs["dirs"] == other
+    assert other.workspace.root.is_dir()
 
 
-async def test_server_sync_to_served_folders_skips_memory_wait(workspace):
-    """A daemon-mode /resume syncs to the folders the server already serves."""
-    assert await _sync_order(workspace, pinned_elsewhere=False) == ["move"]
-
-
-def test_owned_server_pinned_elsewhere_compares_folder_pair(workspace, monkeypatch):
+async def test_register_or_keep_session_reports_failed_registration(
+    workspace, tmp_path, monkeypatch
+):
+    """The server runs but did not register the project: the session goes
+    there without background work, and says so."""
+    from EvoScientist.cli import commands
     from EvoScientist.langgraph_dev import manager
 
-    alive = SimpleNamespace(poll=lambda: None)
-    run = workspace.runs_dir / RUN
-    monkeypatch.setattr(manager, "_PROCESS", alive)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", workspace.root)
-    monkeypatch.setattr(manager, "_PROCESS_RUN_DIR", run)
-    assert manager.owned_server_pinned_elsewhere(workspace.root, run) is False
-    assert manager.owned_server_pinned_elsewhere(workspace.root, None) is True
-    assert manager.owned_server_pinned_elsewhere(workspace.root / "other", run) is True
-    monkeypatch.setattr(manager, "_PROCESS", None)
-    assert manager.owned_server_pinned_elsewhere(workspace.root, None) is False
+    monkeypatch.setattr(manager, "ensure_langgraph_dev", lambda *a, **k: False)
+    monkeypatch.setattr(commands, "_reconcile_autoskill_schedule", lambda *a, **k: None)
+
+    registered = await commands._register_or_keep_session(
+        MagicMock(),
+        target=SessionDirs(Workspace(tmp_path / "other")),
+        current=SessionDirs(workspace),
+    )
+
+    assert registered is False
+
+
+def test_ensure_async_subagent_server_warns_when_project_not_served(workspace):
+    from EvoScientist.cli import commands
+
+    with (
+        patch(
+            "EvoScientist.langgraph_dev.manager.ensure_langgraph_dev",
+            lambda *a, **k: False,
+        ),
+        patch.object(commands, "_reconcile_autoskill_schedule", lambda *a, **k: None),
+        commands.console.capture() as captured,
+    ):
+        commands._ensure_async_subagent_server(MagicMock(), dirs=SessionDirs(workspace))
+
+    assert "unavailable for this project" in captured.get()
 
 
 def test_ensure_async_subagent_server_refused_removes_run_dir(workspace):
-    """A session refused by another one's server leaves no empty run folder."""
+    """A session the server refuses leaves no empty run folder."""
     import typer
 
     from EvoScientist.cli import commands
-    from EvoScientist.langgraph_dev.manager import WorkspaceMismatchError
+    from EvoScientist.langgraph_dev.registration import OlderServerError
 
     run = workspace.runs_dir / RUN
     run.mkdir(parents=True)
 
     def _refuse(*_a, **_k):
-        raise WorkspaceMismatchError("held by another session")
+        raise OlderServerError()
 
     with (
         patch("EvoScientist.langgraph_dev.manager.ensure_langgraph_dev", _refuse),
@@ -944,7 +962,7 @@ async def test_restore_thread_dirs_removes_unused_run_dir(workspace, tmp_path):
         get_thread_metadata=AsyncMock(return_value=stored.metadata())
     )
 
-    with patch.object(commands, "_sync_background_agent_server_workspace", AsyncMock()):
+    with patch.object(commands, "_register_project", AsyncMock()):
         restored = await commands._restore_thread_dirs(
             "t1",
             dirs=started,
@@ -957,51 +975,14 @@ async def test_restore_thread_dirs_removes_unused_run_dir(workspace, tmp_path):
     assert not started.run_dir.exists()
 
 
-async def _new_session(workspace, sync) -> SessionDirs:
-    """Run the Rich CLI ``/new`` folder switch of a ``--mode=run`` session."""
-    from EvoScientist.cli import commands
+@pytest.mark.parametrize(("mode", "run"), [("run", "exp"), (None, None)])
+def test_new_session_dirs_stay_in_project(workspace, mode, run):
+    """``/new`` stays in the project, so the server already serves it."""
     from EvoScientist.cli.interactive import _new_session_dirs
 
-    with patch.object(commands, "_sync_background_agent_server_workspace", sync):
-        return await _new_session_dirs(
-            SessionDirs(workspace),
-            config=MagicMock(),
-            backend=None,
-            mode="run",
-            run_name="exp",
-        )
+    new_dirs = _new_session_dirs(SessionDirs(workspace), mode=mode, run_name="exp")
 
-
-async def test_new_session_dirs_move_server_to_new_run_dir(workspace):
-    from unittest.mock import AsyncMock
-
-    sync = AsyncMock()
-    new_dirs = await _new_session(workspace, sync)
-
-    assert new_dirs == SessionDirs(workspace, workspace.runs_dir / "exp")
-    assert new_dirs.run_dir.is_dir()
-    assert sync.await_args.kwargs["dirs"] == new_dirs
-
-
-async def test_new_session_dirs_refused_removes_run_dir(workspace):
-    """Another session holds the server: ``/new`` fails and the session
-    keeps its folders, with no empty run folder left behind."""
-    from unittest.mock import AsyncMock
-
-    from EvoScientist.langgraph_dev.manager import WorkspaceMismatchError
-
-    sync = AsyncMock(side_effect=WorkspaceMismatchError("held by another session"))
-    with pytest.raises(WorkspaceMismatchError):
-        await _new_session(workspace, sync)
-
-    assert not (workspace.runs_dir / "exp").exists()
-
-
-async def test_new_session_dirs_survive_failed_sync(workspace):
-    """Any other sync failure starts the new session without background work."""
-    from unittest.mock import AsyncMock
-
-    new_dirs = await _new_session(workspace, AsyncMock(side_effect=OSError("down")))
-
-    assert new_dirs == SessionDirs(workspace, workspace.runs_dir / "exp")
-    assert new_dirs.run_dir.is_dir()
+    expected_run = workspace.runs_dir / run if run else None
+    assert new_dirs == SessionDirs(workspace, expected_run)
+    if expected_run is not None:
+        assert expected_run.is_dir()

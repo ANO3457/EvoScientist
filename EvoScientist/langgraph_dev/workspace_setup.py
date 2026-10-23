@@ -99,33 +99,19 @@ async def register_workspace(dirs: SessionDirs) -> None:
     warm_up(dirs.workspace)
 
 
-async def set_up_at_start(launcher: Workspace | None) -> None:
+async def set_up_at_start() -> None:
     """At the server's start, before it serves requests: set every registered
-    project up again, then register *launcher*, the project of the client
-    that started the server, if any.
+    project up again. Clients register their own project once the server
+    answers, the one that started it too.
 
     The checkpointer has restored every known project's threads by then. A
-    project that cannot be set up, the launcher's too, is logged: one
-    project never stops a server that serves the others.
+    project that cannot be set up is logged: one project never stops a
+    server that serves the others.
     """
     for key in await asyncio.to_thread(registry.REGISTRY.registered):
-        if launcher is None or key != launcher.key:
-            await _set_up_logged(key)
-    if launcher is not None and await _set_up_logged(launcher):
-        warm_up(launcher)
-
-
-async def _set_up_logged(project: Workspace | str) -> bool:
-    """:func:`_set_up` at start, failures logged; whether it was set up."""
-    name = project if isinstance(project, str) else project.key
-    try:
-        if isinstance(project, str):
-            project = await asyncio.to_thread(Workspace, project)
-        await _set_up(project, restore=False)
-    except FolderMissingError:
-        logger.warning("Not serving %s: its folder is missing.", name)
-    except Exception:
-        logger.exception("Could not set %s up.", name)
-    else:
-        return True
-    return False
+        try:
+            await _set_up(await asyncio.to_thread(Workspace, key), restore=False)
+        except FolderMissingError:
+            logger.warning("Not serving %s: its folder is missing.", key)
+        except Exception:
+            logger.exception("Could not set %s up.", key)

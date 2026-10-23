@@ -51,7 +51,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Overwrite
 
 from .message_meta import is_pinned_skill, is_rubric_feedback
-from .paths import SessionDirs, launcher_workspace
+from .paths import SessionDirs
 
 _logger = logging.getLogger(__name__)
 
@@ -1891,13 +1891,12 @@ def _stored_session_dirs(
 
 
 def _known_workspace_keys() -> set[str]:
-    """The projects whose threads the server restores: every project the
-    registry knows, registered or not, and the project of the client that
-    started the server. Blocking."""
+    """The projects whose threads the server restores at start: every project
+    the registry knows, registered or not. A new project's are restored at
+    its first registration. Blocking."""
     from .langgraph_dev.registry import REGISTRY
 
-    launcher = launcher_workspace()
-    return REGISTRY.known() | ({launcher.key} if launcher is not None else set())
+    return REGISTRY.known()
 
 
 # The projects (workspace keys) whose threads this server process restored.

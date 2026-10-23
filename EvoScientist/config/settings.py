@@ -319,12 +319,12 @@ class EvoScientistConfig:
     langgraph_dev_jobs_per_worker: int = 10
 
     # Keep the auto-started langgraph dev subprocess running after the CLI
-    # exits. The next `EvoSci` start in the same workspace reuses it instantly
-    # instead of paying the cold boot (~15s). Starting in a DIFFERENT workspace
-    # raises WorkspaceMismatchError with the leftover server's pid — stop it
-    # manually (the server is pinned to one workspace per process). Known
-    # limitation: changing langgraph_dev_port/host while a keepalive server
-    # runs orphans its records — run `EvoSci server stop` before switching.
+    # exits. The next `EvoSci` start (CLI, TUI, serve, channels), in any
+    # project, reuses it instantly instead of paying the cold boot (~15s); the
+    # WebUI and `deploy --json` reuse one started from their own project.
+    # Known limitation: changing langgraph_dev_port/host while a keepalive
+    # server runs orphans its records — run `EvoSci server stop` before
+    # switching.
     langgraph_dev_keepalive: bool = False
 
     # Which backend serves the CLI/TUI's graph runs: the in-process local

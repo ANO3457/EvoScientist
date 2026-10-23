@@ -12,10 +12,12 @@ Events:
   ``config_dir``, ``log_file``, ``warnings`` (a list of strings), and with
   ``--tunnel`` also ``public_url`` (null when no URL was reported in time).
   ``owned`` is true when this command started the backend and stops it on
-  exit, false when it attached to a running one for the same workspace and
-  leaves it running. When attached, ``workspace``, ``data_dir`` and
-  ``config_dir`` are the running backend's, from its ownership record (or
-  this command's own when an older release wrote the record without them).
+  exit, false when it attached to a running one started from the same
+  project and leaves it running. ``workspace`` is that project, which this
+  command registered, and ``assistant_id`` its chat assistant. When
+  attached, ``data_dir`` and ``config_dir`` are the running backend's, from
+  its ownership record (or this command's own when an older release wrote the
+  record without them).
   ``data_dir`` and ``config_dir`` are paths to open files at, never to
   compare as strings: one folder can have more than one spelling (an 8.3
   short name on Windows, a symlink).
@@ -24,12 +26,13 @@ Events:
 
   - ``invalid_port``: ``port``.
   - ``port_conflict``: ``reason``, always: ``foreign`` (another program holds
-    the port), ``no_record`` (a langgraph dev without an ownership record, so
-    its workspace is unknown) or ``record_mismatch`` (the ownership record
+    the port), ``no_record`` (a langgraph dev without an ownership record)
+    or ``record_mismatch`` (the ownership record
     names a process that does not serve this port, or one bound to another
     interface).
-  - ``workspace_conflict``: ``workspace``, the running backend's, and
-    ``run_dir`` when it serves a run folder of this workspace.
+  - ``workspace_conflict``: ``workspace``, the project of the client that
+    started the running backend: the app gets that project from calls that
+    name none (``GET /api/workspace``), so it does not attach.
   - ``ccproxy_failed``: empty.
   - ``backend_start_failed``: ``log_file`` when the start failed, or
     ``lock_file`` when another EvoScientist process held the start lock too
@@ -329,7 +332,6 @@ class _Run:
             if isinstance(bound, str) and not lgm._is_loopback_host(bound):
                 warnings.append(_public_bind_warning(bound))
             owned = False
-            workspace = record.get("workspace", ws)
             data_dir = record.get("data_dir") or str(paths.DATA_DIR)
             config_dir = record.get("config_dir") or str(paths.CONFIG_DIR)
             hint = server_setup_hint(record)
@@ -340,7 +342,6 @@ class _Run:
                 )
         else:
             owned = True
-            workspace = ws
             # The human mode's banners, for the app to show.
             if not lgm._is_loopback_host(self.host):
                 warnings.append(_public_bind_warning(self.host))
@@ -370,8 +371,8 @@ class _Run:
         fields: dict[str, Any] = {
             "url": lgm._base_url(self.port, self.host),
             "owned": owned,
-            "workspace": workspace,
-            "assistant_id": chat_assistant_id(Workspace(workspace)),
+            "workspace": ws,
+            "assistant_id": chat_assistant_id(Workspace(ws)),
             "data_dir": data_dir,
             "config_dir": config_dir,
             "log_file": str(lgm.RUNTIME.log_file),

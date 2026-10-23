@@ -739,8 +739,7 @@ def _ensure_async_subagent_server(
     """Start the langgraph dev subprocess for background agent work.
 
     Shared by both the interactive entry and the serve entry so the
-    user-visible status message and workspace-mismatch handling stay in one
-    place.
+    user-visible status message and the refusal handling stay in one place.
 
     ``backend`` is the calling surface's resolved gateway backend, forwarded to
     ``ensure_langgraph_dev`` so whether a server is needed follows the
@@ -748,16 +747,15 @@ def _ensure_async_subagent_server(
     global-read behavior.
 
     Raises ``typer.Exit(1)`` (after surfacing a red error) when the server
-    cannot be used for *dirs* (``ServerUnusableError``): e.g. an
-    externally-managed langgraph dev is already running for a different
-    workspace, the server is from an older EvoScientist, or the project's
-    folder is gone.
+    cannot be used for *dirs* (``ServerUnusableError``): the server is from
+    an older EvoScientist, or the project's folder is gone.
     """
     from ..langgraph_dev.manager import (
         _DEFAULT_HOST,
+        _DEFAULT_PORT,
         _is_loopback_host,
         ensure_langgraph_dev,
-        is_async_subagents_available,
+        is_langgraph_dev_running,
     )
     from ..langgraph_dev.registration import ServerUnusableError
 
@@ -766,10 +764,9 @@ def _ensure_async_subagent_server(
             "[dim]Starting background agent server (langgraph dev)...[/dim]",
             spinner="dots",
         ):
-            ensure_langgraph_dev(
+            served = ensure_langgraph_dev(
                 config,
                 workspace_dir=dirs.workspace.root,
-                run_dir=dirs.run_dir,
                 backend=backend,
             )
             _reconcile_autoskill_schedule(config, workspace=dirs.workspace)
@@ -780,6 +777,10 @@ def _ensure_async_subagent_server(
 
     from ..langgraph_dev import manager as _lg_manager
 
+    if not served:
+        console.print(
+            f"[yellow]{escape(_lg_manager.SERVER_UNAVAILABLE_MESSAGE)}[/yellow]"
+        )
     if _lg_manager.CONFIG_DRIFT_SINCE_LAUNCH:
         console.print(
             "[yellow]⚠ Configuration or version changed since the background "
@@ -791,13 +792,17 @@ def _ensure_async_subagent_server(
         console.print(f"[yellow]⚠ {escape(_lg_manager.AGENT_SHELL_DRIFT)}[/yellow]")
 
     # The backend is shared by every UI mode, so the exposure warning lives
-    # here, not just in deploy/WebUI. Gated on the server being up: warning
-    # about a bind that never happened would be worse than saying nothing.
+    # here, not just in deploy/WebUI. Gated on the server being up (whether
+    # or not it serves this project): warning about a bind that never
+    # happened would be worse than saying nothing.
     bind_host = str(getattr(config, "langgraph_dev_host", _DEFAULT_HOST) or "").strip()
     if (
         bind_host
         and not _is_loopback_host(bind_host)
-        and is_async_subagents_available()
+        and is_langgraph_dev_running(
+            port=int(getattr(config, "langgraph_dev_port", _DEFAULT_PORT)),
+            host=bind_host,
+        )
     ):
         console.print(
             "[bold white on red] ⚠ PUBLIC BIND [/bold white on red] "
@@ -870,19 +875,16 @@ def _pending_skill_proposals_message(workspace_dir: str | Path) -> str | None:
     )
 
 
-# How long a CLI waits for EvoMemory work before it exits or moves the server.
+# How long a one-shot CLI run waits for EvoMemory work before it exits.
 _MEMORY_WAIT_SECONDS = 120.0
 _MEMORY_WAIT_POLL_SECONDS = 0.5
 _MEMORY_WAIT_OUTPUT_GRACE_SECONDS = 3.0
 
 
-def _wait_for_memory_workers(*, timeout_action: str = "shutting down") -> None:
-    """Wait, bounded, for queued EvoMemory work to finish.
-
-    One-shot runs wait so post-run memory persists before atexit cleanup;
-    moving the server waits because a move stops runs in flight.
-    ``timeout_action`` says what happens when the wait runs out. Returns at
-    once when nothing runs.
+def _wait_for_memory_workers() -> None:
+    """Wait, bounded, for queued EvoMemory work to finish, so post-run memory
+    persists before a one-shot run's atexit cleanup. Returns at once when
+    nothing runs.
     """
     try:
         from ..memory.worker_activity import (
@@ -911,9 +913,7 @@ def _wait_for_memory_workers(*, timeout_action: str = "shutting down") -> None:
             announced = True
 
     def print_timeout(phase: MemoryActivityPhase) -> None:
-        console.print(
-            f"[dim]EvoMemory {phase} is still running; {timeout_action}.[/dim]"
-        )
+        console.print(f"[dim]EvoMemory {phase} is still running; shutting down.[/dim]")
 
     wait_for_memory_pipeline_idle(
         timeout_seconds=_MEMORY_WAIT_SECONDS,
@@ -926,18 +926,20 @@ def _wait_for_memory_workers(*, timeout_action: str = "shutting down") -> None:
 
 
 _RESUME_SYNC_STATUS = (
-    "[dim]Syncing background agent server to resumed workspace...[/dim]"
+    "[dim]Registering the resumed project with the background agent server...[/dim]"
 )
 
 
-async def _sync_background_agent_server_workspace(
+async def _register_project(
     config: Any,
     *,
     dirs: SessionDirs,
     backend: str | None = None,
-    status_message: str = _RESUME_SYNC_STATUS,
-) -> None:
-    """Sync langgraph dev to a resumed workspace for background agent work.
+) -> bool:
+    """Register *dirs*' project with the background agent server, starting
+    the server when it is not running. False when the server needed for
+    background work does not serve the project (it did not start, or the
+    registration failed).
 
     ``ensure_langgraph_dev`` is intentionally always called: EvoMemory
     background workers require the server even when async subagents are disabled.
@@ -950,25 +952,13 @@ async def _sync_background_agent_server_workspace(
     """
     import asyncio
 
-    from ..langgraph_dev.manager import (
-        ensure_langgraph_dev,
-        owned_server_pinned_elsewhere,
-    )
+    from ..langgraph_dev.manager import ensure_langgraph_dev
 
-    with console.status(status_message, spinner="dots"):
-        # Only a move stops runs in flight; a sync to the served folders is a
-        # health check and must not wait on memory work.
-        if await asyncio.to_thread(
-            owned_server_pinned_elsewhere, dirs.workspace.root, dirs.run_dir
-        ):
-            await asyncio.to_thread(
-                _wait_for_memory_workers, timeout_action="moving the server anyway"
-            )
-        await asyncio.to_thread(
+    with console.status(_RESUME_SYNC_STATUS, spinner="dots"):
+        served = await asyncio.to_thread(
             ensure_langgraph_dev,
             config,
             workspace_dir=dirs.workspace.root,
-            run_dir=dirs.run_dir,
             backend=backend,
         )
         await asyncio.to_thread(
@@ -976,61 +966,53 @@ async def _sync_background_agent_server_workspace(
             config,
             workspace=dirs.workspace,
         )
+    return served
 
 
-async def _move_server_or_keep_session(
+async def _register_or_keep_session(
     config: Any,
     *,
     target: SessionDirs,
     current: SessionDirs | None,
     backend: str | None = None,
-    new_run_dir: bool = False,
-    status_message: str = _RESUME_SYNC_STATUS,
 ) -> bool:
-    """Move the background agent server to *target* before a session goes there.
+    """Register *target*'s project with the server before a session goes there.
 
-    Until the server serves several workspaces it is pinned to one workspace
-    and run folder, so background workers and deployed sub-agents would
-    otherwise keep working in *current*, the folders the server was last
-    synced to (``None`` when it was not started yet). Nothing happens when
-    the two are the same.
+    The server serves every registered project, so background workers and
+    deployed sub-agents work in *target* once its project is registered.
+    Nothing happens when *target* is in *current*'s project (``None`` when the
+    server was not started yet), whichever run folder it works in.
 
     Raises ``ServerUnusableError`` when the server cannot be used for
-    *target* (another EvoSci session holds it for other folders, or
-    *target*'s project folder is gone): the caller keeps its session as it is, and the
-    run folder made for *target* (``new_run_dir``) is removed. Returns False
-    when the move failed otherwise: the session can go to *target*, but
-    async sub-agents and EvoMemory workers may be unavailable.
+    *target*'s project (a server from an older EvoScientist, or a known
+    project whose folder is gone): the caller keeps its session as it is.
+    Returns False when the registration failed otherwise: the session can go
+    to *target*, but async sub-agents and EvoMemory workers may be
+    unavailable. An ``OSError`` creating *target*'s folder is raised: the
+    session cannot work there.
     """
-    if target == current:
+    if current is not None and target.workspace == current.workspace:
         return True
 
     import asyncio
 
-    from ..langgraph_dev.registration import (
-        ServerUnusableError,
-        refuse_missing_project,
-    )
+    from ..langgraph_dev.registration import ServerUnusableError, prepare_workdir
 
+    # Whatever the backend: a known project whose folder is gone is refused
+    # rather than recreated empty.
+    await asyncio.to_thread(prepare_workdir, target.workspace.root)
     try:
-        # Whatever the backend: a known project whose folder is gone is
-        # refused rather than recreated empty.
-        await asyncio.to_thread(refuse_missing_project, target.workspace.root)
-        await _sync_background_agent_server_workspace(
-            config, dirs=target, backend=backend, status_message=status_message
-        )
+        return await _register_project(config, dirs=target, backend=backend)
     except ServerUnusableError:
-        if new_run_dir:
-            _remove_unused_run_dir(target.run_dir)
         raise
     except Exception:
         logging.getLogger(__name__).warning(
-            "Failed to sync background agent server to %s; continuing in degraded mode",
-            target.work_dir,
+            "Failed to register %s with the background agent server; "
+            "continuing in degraded mode",
+            target.workspace.root,
             exc_info=True,
         )
         return False
-    return True
 
 
 async def _restore_thread_dirs(
@@ -1042,14 +1024,17 @@ async def _restore_thread_dirs(
     config: Any,
     backend: str | None = None,
 ) -> SessionDirs:
-    """Return the folders to resume *thread_id* in, with the server moved there.
+    """Return the folders to resume *thread_id* in, with their project
+    registered with the server.
 
     A thread resumes in the workspace and run folder it was stored with,
     wherever the CLI was started; a thread stored without folders resumes in
-    *dirs*, the folders the session started in. *served* are the folders the
-    server was started for, ``None`` when it was not started yet. A run
+    *dirs*, the folders the session started in. *served* are the folders of
+    the project the server already serves for this session, ``None`` when it
+    was not started yet. A run
     folder made for *dirs* that the thread does not use is removed. Raises
-    ``typer.Exit(1)`` when the server cannot be used there.
+    ``typer.Exit(1)`` when the server cannot be used there, or the thread's
+    folder cannot be created.
     """
     from ..langgraph_dev.registration import ServerUnusableError
 
@@ -1059,17 +1044,17 @@ async def _restore_thread_dirs(
         or dirs
     )
     try:
-        synced = await _move_server_or_keep_session(
+        synced = await _register_or_keep_session(
             config, target=restored, current=served, backend=backend
         )
-    except ServerUnusableError as exc:
+    except (ServerUnusableError, OSError) as exc:
         _remove_unused_run_dir(dirs.run_dir)
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
     if not synced:
         console.print(
-            "[yellow]Background agent server sync failed; async subagents and "
-            "EvoMemory workers may be unavailable.[/yellow]"
+            "[yellow]The background agent server is unavailable for this project; "
+            "async subagents and EvoMemory workers may be unavailable.[/yellow]"
         )
     if restored != dirs:
         _remove_unused_run_dir(dirs.run_dir)
@@ -1483,11 +1468,10 @@ async def _apply_serve_resume_state(
 ) -> None:
     """Adopt a resumed thread/workspace into serve-mode runtime state.
 
-    Workspace-bound resources are rebuilt and synced before mutating the shared
-    state. The agent is loaded before syncing the external server so a load
-    failure cannot move the server away from the currently active session.
-    When another session holds the server nothing changes; when the move fails
-    otherwise, serve switches and continues without background work.
+    Workspace-bound resources are rebuilt and the new project registered
+    before mutating the shared state. When the server cannot be used for the
+    new project nothing changes; when the registration fails otherwise, serve
+    switches and continues without background work.
     """
     import asyncio
 
@@ -1540,13 +1524,13 @@ async def _apply_serve_resume_state(
                 await leave_thread(proactive)
             await asyncio.to_thread(_serve_proactive_call, proactive.stop)
         try:
-            moved = await _move_server_or_keep_session(
+            moved = await _register_or_keep_session(
                 effective_config,
                 target=new_dirs,
                 current=runtime_state.dirs,
                 backend=runtime_state.gateway_backend,
             )
-        except ServerUnusableError:
+        except (ServerUnusableError, OSError):
             if proactive is not None and moves_workspace:
                 if left is not None:
                     # The session stays where it was: arm again what serve paused.
@@ -1560,8 +1544,9 @@ async def _apply_serve_resume_state(
             raise
         if not moved:
             console.print(
-                "[yellow]Background agent server sync failed; async "
-                "subagents and EvoMemory workers may be unavailable.[/yellow]"
+                "[yellow]The background agent server is unavailable for this "
+                "project; async subagents and EvoMemory workers may be "
+                "unavailable.[/yellow]"
             )
             if proactive is not None and moves_workspace:
                 from ..proactive.serve import MOVE_FAILED_REASON
@@ -2236,8 +2221,8 @@ def serve(
 
     gateway_backend = resolve_gateway_backend(config, GatewaySurface.SERVE)
 
-    # Auto-start langgraph dev (after workspace resolution, so the server
-    # registers the CLI's workspace as it starts).
+    # Auto-start langgraph dev and register the CLI's project (after the
+    # workspace is resolved).
     _ensure_async_subagent_server(config, dirs=dirs, backend=gateway_backend)
 
     if config.dangerous_mode:
@@ -3297,8 +3282,8 @@ def _main_callback(
         _gateway_surface = GatewaySurface.INTERACTIVE
     gateway_backend = resolve_gateway_backend(config, _gateway_surface)
 
-    # Auto-start langgraph dev (after workspace resolution, so the server
-    # registers the CLI's workspace as it starts).
+    # Auto-start langgraph dev and register the CLI's project (after the
+    # workspace is resolved).
     # A one-shot resume starts it for the thread's own folders instead, unless
     # the server gateway backend needs a running server to be built.
     prespawn = not (prompt and thread_id) or gateway_backend == "langgraph_server"

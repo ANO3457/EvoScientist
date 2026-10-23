@@ -23,12 +23,10 @@ from EvoScientist.langgraph_dev import manager
 def reset_module_state():
     """Reset manager module globals before each test for isolation."""
     manager._PROCESS = None
-    manager._PROCESS_WORKSPACE = None
     manager._ASYNC_SUBAGENTS_AVAILABLE = False
     manager._LOG_OFFSET_AT_START = 0
     yield
     manager._PROCESS = None
-    manager._PROCESS_WORKSPACE = None
     manager._ASYNC_SUBAGENTS_AVAILABLE = False
     manager._LOG_OFFSET_AT_START = 0
 
@@ -520,7 +518,7 @@ class TestEnsureLanggraphDev:
         ):
             result = manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path)
 
-        assert result is proc
+        assert result is True
         start.assert_called_once()
         atexit_register.assert_called_once_with(manager.stop_langgraph_dev, proc)
         assert manager.is_async_subagents_available() is True
@@ -550,7 +548,8 @@ class TestEnsureLanggraphDev:
         ):
             result = manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path)
 
-        assert result is None
+        # No server is needed, so the session has what it needs.
+        assert result is True
         mock_running.assert_not_called()
         start.assert_not_called()
         assert manager.is_async_subagents_available() is False
@@ -619,8 +618,7 @@ class TestEnsureLanggraphDev:
             result = manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path)
             # We didn't spawn anything — there's already a healthy server.
             mock_start.assert_not_called()
-            # Reuse path returns None (we don't own the existing process).
-            assert result is None
+            assert result is True
             # is_async_subagents_available was flipped True.
             assert manager.is_async_subagents_available() is True
             # Health check was called at least once.

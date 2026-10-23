@@ -471,10 +471,8 @@ async def _lifespan(_app: Starlette):
     # graphs and started its cron scheduler and run workers, and before it
     # serves requests; the file I/O goes to a thread because blockbuster
     # refuses it on the event loop.
-    from EvoScientist.paths import launcher_workspace
-
     await asyncio.to_thread(load_local_secret)
-    await workspace_setup.set_up_at_start(await asyncio.to_thread(launcher_workspace))
+    await workspace_setup.set_up_at_start()
     yield
 
 

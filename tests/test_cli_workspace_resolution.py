@@ -228,7 +228,7 @@ def _run_prompt(
         "_ensure_async_subagent_server",
         lambda _config, *, dirs, backend=None: captured["prespawned"].append(dirs),
     )
-    monkeypatch.setattr(commands, "_sync_background_agent_server_workspace", _fake_sync)
+    monkeypatch.setattr(commands, "_register_project", _fake_sync)
     monkeypatch.setattr(commands, "_load_agent", _fake_load_agent)
     monkeypatch.setattr(
         gateway_mod,

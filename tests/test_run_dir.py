@@ -167,7 +167,7 @@ def test_run_mode_memory_is_keyed_to_the_workspace_root(run_dirs, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Server pinned to (workspace, run folder)
+# The server serves projects, not run folders
 # ---------------------------------------------------------------------------
 
 
@@ -178,79 +178,8 @@ def test_server_env_has_no_run_folder(run_dirs, monkeypatch, tmp_path, runtime_p
     monkeypatch.setenv("EVOSCIENTIST_RUN_DIR", "/inherited")
     captured = _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
     with pytest.raises(_PopenAbort):
-        manager.start_langgraph_dev(
-            workspace_dir=run_dirs.workspace.root,
-            run_dir=run_dirs.run_dir,
-            port=16190,
-        )
+        manager.start_langgraph_dev(workspace_dir=run_dirs.workspace.root, port=16190)
     assert "EVOSCIENTIST_RUN_DIR" not in captured["env"]
-
-
-def _reuse_running_server(monkeypatch):
-    monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: True)
-    monkeypatch.setattr(manager, "_PROCESS", None)
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", None)
-    monkeypatch.setattr(manager, "_PROCESS_RUN_DIR", None)
-    cfg = manager.EvoScientistConfig()
-    cfg.enable_async_subagents = True
-    return cfg
-
-
-def test_reuse_refuses_another_run_folder_of_the_same_workspace(
-    workspace, monkeypatch, runtime_paths
-):
-    manager._write_workspace_sidecar(
-        workspace_dir=workspace.root, pid=1, run_dir=workspace.runs_dir / "a"
-    )
-    cfg = _reuse_running_server(monkeypatch)
-    for run_dir in (workspace.runs_dir / "b", None):
-        with pytest.raises(manager.WorkspaceMismatchError) as exc:
-            manager.ensure_langgraph_dev(
-                cfg, workspace_dir=workspace.root, run_dir=run_dir
-            )
-        # Same workspace: pointing at --workdir would name the user's own folder.
-        assert "--workdir" not in str(exc.value)
-
-
-def test_reuse_accepts_the_same_pair(run_dirs, monkeypatch, runtime_paths):
-    manager._write_workspace_sidecar(
-        workspace_dir=run_dirs.workspace.root, pid=1, run_dir=run_dirs.run_dir
-    )
-    cfg = _reuse_running_server(monkeypatch)
-    manager.ensure_langgraph_dev(
-        cfg, workspace_dir=run_dirs.workspace.root, run_dir=run_dirs.run_dir
-    )
-
-
-def test_owned_server_restarts_for_another_run_folder(
-    workspace, monkeypatch, runtime_paths
-):
-    class _LiveProc:
-        def poll(self):
-            return None
-
-    stopped: list = []
-    started: list = []
-    monkeypatch.setattr(manager, "_PROCESS", _LiveProc())
-    monkeypatch.setattr(manager, "_PROCESS_WORKSPACE", workspace.root)
-    monkeypatch.setattr(manager, "_PROCESS_RUN_DIR", workspace.runs_dir / "a")
-    monkeypatch.setattr(manager, "stop_langgraph_dev", lambda *a: stopped.append(1))
-    monkeypatch.setattr(manager, "_wait_for_port_release", lambda *a, **k: True)
-    monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: False)
-    monkeypatch.setattr(
-        manager, "start_langgraph_dev", lambda **kw: started.append(kw) or object()
-    )
-    monkeypatch.setattr(manager.atexit, "register", lambda *a, **k: None)
-    cfg = manager.EvoScientistConfig()
-    cfg.enable_async_subagents = True
-
-    manager.ensure_langgraph_dev(
-        cfg, workspace_dir=workspace.root, run_dir=workspace.runs_dir / "b"
-    )
-
-    assert stopped == [1]
-    assert started[0]["workspace_dir"] == workspace.root
-    assert started[0]["run_dir"] == workspace.runs_dir / "b"
 
 
 def test_server_graphs_work_in_the_run_folder_and_crons_in_the_root(
@@ -567,7 +496,7 @@ async def test_cli_and_server_upgrade_before_reading(
         "langgraph_runtime_inmem.database",
         SimpleNamespace(GLOBAL_STORE=store),
     )
-    monkeypatch.setattr(sessions, "launcher_workspace", lambda: workspace)
+    monkeypatch.setattr(sessions, "_known_workspace_keys", lambda: {workspace.key})
     async with sessions.create_checkpointer_for_langgraph_api():
         pass
     (restored,) = store["threads"]
@@ -842,7 +771,7 @@ async def test_channel_attachments_follow_resume_into_another_workspace(
 
     with (
         patch(
-            "EvoScientist.cli.commands._sync_background_agent_server_workspace",
+            "EvoScientist.cli.commands._register_project",
             new=AsyncMock(),
         ),
         patch("EvoScientist.cli.commands._load_agent", return_value=MagicMock()),
