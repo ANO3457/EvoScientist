@@ -233,8 +233,10 @@ def test_stop_langgraph_dev_forgets_served_workspace(
     assert manager.SERVED_WORKSPACE is None
 
 
-def test_keepalive_skips_atexit_registration(tmp_path, monkeypatch, runtime_paths):
-    """keepalive=True leaves the server running on exit; False registers stop."""
+def test_started_server_outlives_session(tmp_path, monkeypatch, runtime_paths):
+    """Every session shares it until ``EvoSci server stop``."""
+    import atexit
+
     monkeypatch.setattr(
         manager,
         "RUNTIME",
@@ -242,24 +244,28 @@ def test_keepalive_skips_atexit_registration(tmp_path, monkeypatch, runtime_path
     )
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: False)
     monkeypatch.setattr(manager, "_PROCESS", None)
-    fake_proc = object()
-    monkeypatch.setattr(manager, "start_langgraph_dev", lambda **kw: fake_proc)
-    registered = []
+    started: list = []
     monkeypatch.setattr(
-        manager.atexit, "register", lambda *a, **kw: registered.append(a)
+        manager, "start_langgraph_dev", lambda **kw: started.append(kw) or object()
     )
+    registered = []
+    monkeypatch.setattr(atexit, "register", lambda *a, **kw: registered.append(a))
 
     cfg = manager.EvoScientistConfig()
-    assert cfg.langgraph_dev_keepalive is False, "keepalive must default to off"
     cfg.enable_async_subagents = True
-    cfg.langgraph_dev_keepalive = True
     assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A")
     assert registered == []
+    assert started[0].get("lasting", True) is True
 
-    cfg.langgraph_dev_keepalive = False
-    assert manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A")
-    assert registered
-    assert registered[0][0] is manager.stop_langgraph_dev
+
+def test_sidecar_records_whether_server_lasts(tmp_path, monkeypatch, runtime_paths):
+    monkeypatch.setattr(
+        manager,
+        "RUNTIME",
+        dataclasses.replace(runtime_paths, workspace_sidecar=tmp_path / "ws.json"),
+    )
+    manager._write_workspace_sidecar(workspace_dir=tmp_path, pid=1, lasting=False)
+    assert manager._read_workspace_sidecar()["lasting"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +404,6 @@ def test_started_server_recorded_for_next_version(tmp_path, monkeypatch, runtime
     monkeypatch.setattr(manager, "_PROCESS", None)
     cfg = manager.EvoScientistConfig()
     cfg.enable_async_subagents = True
-    cfg.langgraph_dev_keepalive = True
 
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.3.5")
     manager.ensure_langgraph_dev(cfg, workspace_dir=tmp_path / "A")
@@ -738,7 +743,7 @@ def test_server_config_fingerprint_ignores_cli_only_fields():
     base = manager._server_config_fingerprint(cfg)
     cfg.show_thinking = not cfg.show_thinking
     cfg.telegram_bot_token = "tg-token"
-    cfg.langgraph_dev_keepalive = True
+    cfg.default_mode = "run"
     assert manager._server_config_fingerprint(cfg) == base
 
 

@@ -288,24 +288,22 @@ def _ensure_standalone_dev_server(
 
 
 def _ensure_ccproxy(config: Any) -> None:
-    """Start ccproxy, or reuse a running one, when Anthropic uses OAuth.
+    """Start ccproxy, or reuse a running one, when Anthropic uses OAuth. It
+    outlives this runner, for every session and the background server to
+    share.
 
     Must run before the dev server spawns: its env is copied from ``os.environ``.
     """
-    if getattr(config, "anthropic_auth_mode", "api_key") != "oauth":
+    from ..ccproxy_manager import maybe_start_ccproxy, uses_oauth
+
+    if not uses_oauth(config):
         return
 
-    import atexit
-
-    from ..ccproxy_manager import maybe_start_ccproxy, stop_ccproxy
-
     try:
-        proc = maybe_start_ccproxy(config)
+        maybe_start_ccproxy(config, lasting=True)
     except RuntimeError as exc:
         logger.error("ccproxy startup failed: %s", exc)
         raise SystemExit(1) from exc
-    if proc:
-        atexit.register(stop_ccproxy, proc)
 
 
 def run_standalone(

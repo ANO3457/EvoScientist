@@ -100,6 +100,7 @@ def deploy(
         _read_workspace_sidecar,
         _server_config_fingerprint,
         is_langgraph_dev_running,
+        is_lasting,
         read_tunnel_url,
         start_langgraph_dev,
         stop_langgraph_dev,
@@ -155,15 +156,28 @@ def deploy(
                 if sidecar is not None and _pid_serves_port(
                     sidecar.get("pid"), effective_port
                 ):
-                    # Surface what we know about the occupant — with keepalive it
-                    # may be an ownerless leftover rather than a live session.
-                    # Only when the recorded pid verifiably serves THIS port, so a
-                    # stale or other-port record is never blamed.
-                    console.print(
-                        f"[dim]It was started from "
-                        f"{sidecar.get('workspace')} (pid {sidecar.get('pid')}). "
-                        f"Stop it with [bold]EvoSci server stop[/bold].[/dim]"
-                    )
+                    # Surface what we know about the occupant: usually the
+                    # background server earlier sessions left running for every
+                    # session to share, else another deploy's (or the desktop
+                    # app's). Only when the recorded pid verifiably serves THIS
+                    # port, so a stale or other-port record is never blamed.
+                    if not is_lasting(sidecar):
+                        console.print(
+                            f"[dim]It is not the background service: another "
+                            f"EvoSci deploy, the desktop app or an older release "
+                            f"runs it, started from "
+                            f"{sidecar.get('workspace')} (pid {sidecar.get('pid')}). "
+                            "Stop that one first.[/dim]"
+                        )
+                    else:
+                        console.print(
+                            f"[dim]It is the background agent server started "
+                            f"from {sidecar.get('workspace')} (pid "
+                            f"{sidecar.get('pid')}), which your EvoSci sessions "
+                            "share. Use it as it is, or stop it with [bold]EvoSci "
+                            "server stop[/bold] to deploy here (that ends the "
+                            "background work of the sessions using it).[/dim]"
+                        )
                 else:
                     console.print(
                         "[dim]Stop the existing EvoSci/serve session first.[/dim]"
@@ -251,6 +265,8 @@ def deploy(
                     tunnel=tunnel,
                     config_fingerprint=_server_config_fingerprint(config),
                     allowed_origins=getattr(config, "backend_allowed_origins", ""),
+                    # deploy is the server's foreground owner: it stops it.
+                    lasting=False,
                 )
             atexit.register(stop_langgraph_dev, proc)
         except Exception as exc:

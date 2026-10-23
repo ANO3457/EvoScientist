@@ -3,7 +3,7 @@
 Every config field must fall into exactly one of two binding regimes:
 
 1. **fingerprint-covered (restart-to-apply)** — the field feeds
-   ``_server_config_fingerprint`` in ``langgraph_dev/manager.py``. A keepalive
+   ``_server_config_fingerprint`` in ``langgraph_dev/manager.py``. A running
    server serves the construction-time value until restart; drift sets the
    restart hint. New dataclass fields land here automatically: the fingerprint
    iterates all fields, so the default failure mode is a spurious restart
@@ -53,8 +53,6 @@ FIELD_CHANNELS: dict[str, str] = {
     " server via GraphTarget / EVOSCIENTIST_WORKSPACE_DIR",
     "webui_port": "WebUI client process",
     "webui_host": "WebUI client process",
-    "langgraph_dev_keepalive": "server lifecycle flag consumed at spawn time,"
-    " not by graph construction",
     "shell_allow_list": "per-call client-side approval policy, read fresh at"
     " each HITL interrupt (channels/interaction.py, stream/display.py)",
     "mirror": "download source, read from the config file at each install",

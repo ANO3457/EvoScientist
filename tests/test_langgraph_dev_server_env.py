@@ -185,7 +185,6 @@ def test_ensure_passes_backend_allowed_origins(monkeypatch, tmp_path, runtime_pa
     started: dict = {}
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_kw: False)
     monkeypatch.setattr(manager, "_is_port_occupied", lambda *_a, **_kw: False)
-    monkeypatch.setattr(manager.atexit, "register", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         manager, "start_langgraph_dev", lambda *_a, **kw: started.update(kw)
     )

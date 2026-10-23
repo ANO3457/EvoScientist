@@ -59,7 +59,6 @@ class LauncherConfig:
     backend_port: int
     webui_host: str
     webui_port: int
-    keepalive: bool = False
     # Honoured by :meth:`WebUILauncher.wait_ready` for front-ends whose
     # ``handles_browser_open`` is False (every runner in this module).
     open_browser: bool = False
@@ -74,7 +73,6 @@ class BackendTarget:
     workspace_dir: str
     backend_host: str
     backend_port: int
-    keepalive: bool = False
 
 
 @dataclass(frozen=True)
@@ -383,6 +381,8 @@ class WebUILauncher:
         self._on_lock_wait = on_lock_wait
         self._backend_proc: subprocess.Popen | None = None
         self._backend_started = False
+        # Set once start() finished: the backend then outlives the launcher.
+        self._launched = False
         # True from just before start_langgraph_dev() until its proc handle is
         # wired. start_langgraph_dev blocks up to 60s on health, so a stop()
         # during that window has no _backend_proc to kill yet — this flag lets
@@ -456,7 +456,12 @@ class WebUILauncher:
 
             env = self._build_frontend_env()
             self._webui_proc = self._runner.start(self._cfg, env)
-            self._raise_if_stopped()
+            with self._lock:
+                # From here the backend this launch started outlives it, for
+                # every session to share; a stop() that came first still
+                # tears it down.
+                self._raise_if_stopped()
+                self._launched = True
         except BaseException:
             self._teardown()
             raise
@@ -534,7 +539,8 @@ class WebUILauncher:
 
     def stop(self) -> None:
         """Idempotent teardown. Stops the front-end always; stops the backend
-        only if we started it and keepalive is off. Safe before/during
+        only if we started it and the launch did not finish (a started
+        backend outlives the WebUI, for every session). Safe before/during
         ``start()``: always marks the launcher stopped so an in-flight
         ``start()`` aborts and cleans up what it spawned."""
         self._stopped = True
@@ -558,12 +564,12 @@ class WebUILauncher:
             release = getattr(self._runner, "release", None)
             if release is not None:
                 release()
-            if self._backend_proc is not None and not self._cfg.keepalive:
+            if self._backend_proc is not None and not self._launched:
                 from ..langgraph_dev.manager import stop_langgraph_dev
 
                 proc, self._backend_proc = self._backend_proc, None
                 stop_langgraph_dev(proc)
-            elif self._backend_start_initiated and not self._cfg.keepalive:
+            elif self._backend_start_initiated and not self._launched:
                 # stop() fired while start_langgraph_dev was still running, so we
                 # have no proc handle yet. Stop only the process THIS launcher
                 # spawned (the manager's in-memory record), never the shared
@@ -1020,6 +1026,5 @@ def build_launcher_config(
         backend_port=backend_port,
         webui_host=webui_host,
         webui_port=webui_port,
-        keepalive=bool(getattr(config, "langgraph_dev_keepalive", False)),
         open_browser=True,
     )

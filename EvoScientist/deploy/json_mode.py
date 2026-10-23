@@ -478,6 +478,8 @@ class _Run:
                 tunnel=tunnel,
                 config_fingerprint=lgm._server_config_fingerprint(config),
                 allowed_origins=getattr(config, "backend_allowed_origins", ""),
+                # The app owns the backend it started: it stops it.
+                lasting=False,
                 job=self.job,
             )
         except Exception as exc:

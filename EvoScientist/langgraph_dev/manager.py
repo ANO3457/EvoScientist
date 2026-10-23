@@ -11,7 +11,6 @@ Mirrors the lifecycle pattern used by ``ccproxy_manager.py``.
 
 from __future__ import annotations
 
-import atexit
 import hashlib
 import importlib.metadata
 import json
@@ -150,7 +149,7 @@ def needs_langgraph_dev(
 _LOCK = threading.RLock()
 
 
-# Set by ``ensure_langgraph_dev`` when it reuses a keepalive server whose
+# Set by ``ensure_langgraph_dev`` when it reuses a server whose
 # recorded launch-time config fingerprint differs from the current effective
 # config. The CLI reads it after startup to surface a "restart to apply"
 # hint — the server itself is never restarted automatically.
@@ -221,6 +220,13 @@ def _format_hostport(host: str, port: int) -> str:
     return f"[{probe}]:{port}" if ":" in probe else f"{probe}:{port}"
 
 
+def configured_address(config: object) -> tuple[int, str]:
+    """The server's port and bind interface from *config*, with defaults."""
+    port = int(getattr(config, "langgraph_dev_port", _DEFAULT_PORT))
+    host = str(getattr(config, "langgraph_dev_host", "") or "").strip()
+    return port, host or _DEFAULT_HOST
+
+
 def _base_url(port: int = _DEFAULT_PORT, host: str = _DEFAULT_HOST) -> str:
     return f"http://{_format_hostport(host, port)}"
 
@@ -275,12 +281,13 @@ def _write_workspace_sidecar(
     agent_python: str | object | None = _NOT_RECORDED,
     agent_bash: str | object | None = _NOT_RECORDED,
     host: str | None = None,
+    lasting: bool | None = None,
 ) -> None:
     """Record the pid of the langgraph dev we just started, and the project
     of the client that started it.
 
     ``config_fingerprint`` (optional) captures the launch-time config subset
-    the server consumed; keepalive reuse compares it to detect drift.
+    the server consumed; a reuse compares it to detect drift.
     ``agent_python`` (optional) is the ``python`` the server's agents got,
     None when they have none; reuse compares it to warn about a session whose
     PATH resolves another one. ``agent_bash`` (optional) is the Git Bash
@@ -289,7 +296,8 @@ def _write_workspace_sidecar(
     config folders, which the server inherits (``paths.dir_env``), so a
     client attaching from another environment reads the server's own.
     ``host`` is the interface the server binds, so such a client can tell
-    whether the server is reachable from other machines.
+    whether the server is reachable from other machines. ``lasting`` says
+    whether it outlives the process that started it.
 
     Atomic write via temp-file + ``os.replace``: without this, a concurrent
     reader could observe a partially-written file, fail JSON parse, and
@@ -311,6 +319,8 @@ def _write_workspace_sidecar(
         }
         if host is not None:
             payload["host"] = host
+        if lasting is not None:
+            payload["lasting"] = lasting
         if config_fingerprint is not None:
             payload["config_fingerprint"] = config_fingerprint
         if agent_python is not _NOT_RECORDED:
@@ -349,6 +359,13 @@ def _read_workspace_sidecar() -> dict | None:
     if not isinstance(workspace, str) or not workspace:
         return None
     return data
+
+
+def is_lasting(sidecar: dict | None) -> bool:
+    """Whether the recorded server outlives the process that started it,
+    shared by every session; not one ``EvoSci deploy`` or the desktop app
+    owns, nor one an older release recorded."""
+    return sidecar is not None and sidecar.get("lasting") is True
 
 
 def _unlink_workspace_sidecar() -> None:
@@ -671,7 +688,7 @@ def _server_config_fingerprint(config: EvoScientistConfig) -> str:
     """Hash of everything the langgraph dev subprocess consumes at launch.
 
     Deployed graphs read config once at import (``subagents/_factory.py``,
-    ``EvoScientist.py``), so a keepalive server keeps serving those values
+    ``EvoScientist.py``), so a running server keeps serving those values
     until restarted. Iterates the full ``EvoScientistConfig`` field list
     minus the fields that never reach the server
     (:func:`~EvoScientist.config.settings.is_client_only`) — a new config
@@ -720,8 +737,7 @@ def _server_config_fingerprint(config: EvoScientistConfig) -> str:
 def stop_recorded_server() -> int | None:
     """Explicitly stop the langgraph dev recorded in our PID file.
 
-    Backs the user-facing ``EvoSci server stop`` command — the deliberate
-    counterpart to ``langgraph_dev_keepalive``: an opt-in server that
+    Backs the user-facing ``EvoSci server stop`` command: a server that
     outlives its CLI needs a first-class way to stop it. Ownership = our
     PID file + a live process whose cmdline still contains ``langgraph``
     (same loose anti-PID-recycling match as ``_kill_owned_stale_process``,
@@ -904,6 +920,7 @@ def start_langgraph_dev(
     config_fingerprint: str | None = None,
     allowed_origins: str = "",
     job: BackendJob | None = None,
+    lasting: bool = True,
 ) -> subprocess.Popen:
     """Start langgraph dev as a background subprocess.
 
@@ -931,6 +948,10 @@ def start_langgraph_dev(
             the deployed agent can run shell — only enable for trusted use.
         job: A Windows job object the server joins before it runs (started
             suspended, then resumed), so it ends with the caller's process.
+        lasting: Whether the server outlives its caller, shared by every
+            session (recorded for ``EvoSci update``, which starts a lasting
+            server again). False for ``EvoSci deploy``, which stops the
+            server it started.
 
     Returns:
         The Popen handle for the langgraph dev process.
@@ -1103,11 +1124,10 @@ def start_langgraph_dev(
     # API's ``sources``: this process's record plus the two values set above.
     sub_env[ENV_ORIGINS_VAR] = json.dumps(_server_env_origins(str(port), host))
 
-    # POSIX: own session so the child can be group-signalled on cleanup.
-    # Windows: own process group, so Ctrl+C in the terminal does not reach the
-    # server (the CLI stops it itself unless keepalive is on). It still shares
-    # the parent's console: no new window opens, and closing that console ends
-    # the server instead of leaving it running without its CLI.
+    # POSIX: own session so the child can be group-signalled on cleanup, and
+    # outlives the terminal. Windows: own process group, so Ctrl+C in the
+    # terminal does not reach the server. It still shares the parent's
+    # console: no new window opens, and closing that console ends the server.
     if os.name == "nt":
         # getattr keeps this import-safe off Windows (the flag is Windows-only).
         _spawn_kwargs = {
@@ -1146,6 +1166,7 @@ def start_langgraph_dev(
                 *(["--tunnel"] if tunnel else []),
             ],
             cwd=str(server_folder),
+            stdin=subprocess.DEVNULL,
             stdout=log_handle,
             stderr=log_handle,
             env=sub_env,
@@ -1176,6 +1197,7 @@ def start_langgraph_dev(
         agent_python=agent_python(),
         agent_bash=sidecar_bash(),
         host=host,
+        lasting=lasting,
     )
 
     # langgraph dev cold-starts in ~10-15s normally; first-time npx-based MCP
@@ -1337,7 +1359,8 @@ def ensure_langgraph_dev(
     register *workspace_dir* with it.
 
     A server already running on the configured port is reused; otherwise one
-    is started, stopped at exit unless keepalive is on. Either way the server
+    is started, which outlives this process for every session to share until
+    ``EvoSci server stop``. Either way the server
     then registers *workspace_dir*, after the locks are released (the first
     registration of a project restores its threads).
 
@@ -1443,6 +1466,26 @@ def ensure_langgraph_dev(
     return settle(found, workspace.root)
 
 
+def serve_project(
+    config: EvoScientistConfig, workspace_dir: Path, *, with_ccproxy: bool = True
+) -> bool:
+    """Start the background server, or reuse a running one, for
+    *workspace_dir* (``EvoSci service start``, ``EvoSci server start``, the
+    restart after an update). With Anthropic OAuth the server routes through
+    ccproxy: *with_ccproxy* starts it first, lasting like the server
+    (``RuntimeError`` or ``ValueError`` when it cannot start). Returns and
+    raises like :func:`ensure_langgraph_dev`."""
+    from ..ccproxy_manager import maybe_start_ccproxy, setup_ccproxy_env, uses_oauth
+
+    if with_ccproxy:
+        maybe_start_ccproxy(config, lasting=True)
+    elif uses_oauth(config):
+        setup_ccproxy_env(config.ccproxy_port)
+    return ensure_langgraph_dev(
+        config, workspace_dir=workspace_dir, backend="langgraph_server"
+    )
+
+
 @dataclass(frozen=True)
 class _Found:
     """What the locked section found or started."""
@@ -1458,8 +1501,7 @@ def _ensure_langgraph_dev_locked(
 ) -> _Found:
     """Locked critical section of ``ensure_langgraph_dev`` — must hold ``_LOCK``."""
     config_fp = _server_config_fingerprint(config)
-    port = int(getattr(config, "langgraph_dev_port", _DEFAULT_PORT))
-    host = str(getattr(config, "langgraph_dev_host", _DEFAULT_HOST) or _DEFAULT_HOST)
+    port, host = configured_address(config)
     file_persistence = bool(getattr(config, "langgraph_dev_file_persistence", True))
     jobs_per_worker = int(getattr(config, "langgraph_dev_jobs_per_worker", 10))
     ws_path = Path(workspace_dir) if workspace_dir is not None else None
@@ -1468,7 +1510,7 @@ def _ensure_langgraph_dev_locked(
         # The server serves every registered project, so any EvoScientist
         # server on the port will do; the registration that follows tells
         # one from an older release. A server this process did not start
-        # (EvoSci deploy in another terminal, a keepalive server) may have
+        # (EvoSci deploy in another terminal, an earlier session) may have
         # been launched with other settings: its ownership record says.
         owned_running = _PROCESS is not None and _PROCESS.poll() is None
         sidecar = None if owned_running else _read_workspace_sidecar()
@@ -1496,7 +1538,7 @@ def _ensure_langgraph_dev_locked(
         return _Found(available=True, drift=drift, shell_drift=shell_drift)
 
     try:
-        proc = start_langgraph_dev(
+        start_langgraph_dev(
             workspace_dir=ws_path,
             port=port,
             host=host,
@@ -1518,10 +1560,6 @@ def _ensure_langgraph_dev_locked(
         )
         return _Found()
 
-    if getattr(config, "langgraph_dev_keepalive", False):
-        # Keepalive: leave the server (plus PID file + sidecar) behind on CLI
-        # exit so the next start reuses it instantly.
-        logger.info("langgraph_dev_keepalive enabled — server will outlive this CLI.")
-    else:
-        atexit.register(stop_langgraph_dev, proc)
+    # The server outlives this session, with its PID file and sidecar, for
+    # every session to share until ``EvoSci server stop``.
     return _Found(available=True)

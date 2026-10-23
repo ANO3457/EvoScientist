@@ -18,6 +18,7 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
+from ..ccproxy_manager import uses_oauth
 from ..commands.base import (
     ChannelRuntime,
     Command,
@@ -41,6 +42,7 @@ from ..stream.console import console
 from . import (
     async_notifier,
     server_cmd,  # noqa: F401 — registers `EvoSci server` commands
+    service_cmd,  # noqa: F401 — registers `EvoSci service` / `EvoSci ccproxy`
 )
 from ._app import app, channel_app, config_app, configure_app, mcp_app, sessions_app
 from ._constants import build_metadata
@@ -297,11 +299,64 @@ def onboard(
             strict=non_interactive,
         )
 
-    _run_onboard_cli(
+    saved = _run_onboard_cli(
         skip_validation=skip_validation,
         prompter=prompter,
         runtime=_get_cli_async_runtime(ctx),
     )
+    if saved is True and prompter is None and sys.stdin.isatty():
+        _offer_server_start()
+
+
+def _offer_server_start() -> None:
+    """After onboarding: offer to start the background agent service, from
+    ``default_workdir`` or the current folder. A running one keeps the
+    settings it started with; say how to apply the new ones."""
+    import questionary
+
+    from ..config import get_effective_config
+    from ..config.onboard.style import CONFIRM_STYLE, QMARK
+    from ..langgraph_dev import manager
+    from .server_cmd import start_background
+
+    config = get_effective_config()
+    port, host = manager.configured_address(config)
+    if manager.is_langgraph_dev_running(port=port, host=host):
+        if manager.is_lasting(manager._read_workspace_sidecar()):
+            console.print(
+                "[dim]The background agent service runs with your previous "
+                "settings; to apply the new ones, restart it: [bold]EvoSci "
+                "service stop[/bold], then [bold]EvoSci service start[/bold] "
+                "(this ends its running background work).[/dim]"
+            )
+        else:
+            console.print(
+                "[dim]A server that is not the background service runs on the "
+                "port (an EvoSci deploy, the desktop app or an older release); "
+                "the new settings apply once it restarts.[/dim]"
+            )
+        return
+    project = start_workspace_path(None, config.default_workdir)
+    answer = questionary.confirm(
+        f"Start the background agent service for {project} now? It keeps "
+        "running for every EvoSci session until `EvoSci service stop`.",
+        default=True,
+        style=CONFIRM_STYLE,
+        qmark=QMARK,
+    ).ask()
+    if not answer:
+        return
+    try:
+        start_background(None, with_ccproxy=True)
+    except typer.Exit:
+        console.print("[dim]It starts with your next EvoSci session.[/dim]")
+    except Exception as exc:
+        # The configuration is saved; the service starts with the next session.
+        console.print(
+            f"[yellow]Could not start the background agent service "
+            f"({escape(str(exc))}); it starts with your next EvoSci "
+            "session.[/yellow]"
+        )
 
 
 # =============================================================================
@@ -483,9 +538,10 @@ _CONFIGURE_SECTIONS = {
 }
 
 
-def _run_onboard_cli(**kwargs: Any) -> None:
+def _run_onboard_cli(**kwargs: Any) -> bool:
     """Invoke the wizard, presenting non-interactive errors as a clean
-    message + exit code 1 instead of a raw Python traceback.
+    message + exit code 1 instead of a raw Python traceback. Returns whether
+    the configuration was saved.
 
     The wizard raises ``RuntimeError`` for *expected* non-interactive
     failures: rejected ``--api-key`` / ``--tavily-key`` presets, missing
@@ -498,7 +554,7 @@ def _run_onboard_cli(**kwargs: Any) -> None:
     from ..config import run_onboard
 
     try:
-        run_onboard(**kwargs)
+        return run_onboard(**kwargs)
     except RuntimeError as exc:
         console.print(f"[red]✗ {escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
@@ -750,13 +806,7 @@ def _ensure_async_subagent_server(
     cannot be used for *dirs* (``ServerUnusableError``): the server is from
     an older EvoScientist, or the project's folder is gone.
     """
-    from ..langgraph_dev.manager import (
-        _DEFAULT_HOST,
-        _DEFAULT_PORT,
-        _is_loopback_host,
-        ensure_langgraph_dev,
-        is_langgraph_dev_running,
-    )
+    from ..langgraph_dev.manager import ensure_langgraph_dev
     from ..langgraph_dev.registration import ServerUnusableError
 
     try:
@@ -781,6 +831,19 @@ def _ensure_async_subagent_server(
         console.print(
             f"[yellow]{escape(_lg_manager.SERVER_UNAVAILABLE_MESSAGE)}[/yellow]"
         )
+    _print_server_notices(config)
+
+
+def _print_server_notices(config: Any) -> None:
+    """What the user should know about the server a start found or started:
+    drift since its launch, and a public bind."""
+    from ..langgraph_dev import manager as _lg_manager
+    from ..langgraph_dev.manager import (
+        _is_loopback_host,
+        configured_address,
+        is_langgraph_dev_running,
+    )
+
     if _lg_manager.CONFIG_DRIFT_SINCE_LAUNCH:
         console.print(
             "[yellow]⚠ Configuration or version changed since the background "
@@ -795,14 +858,9 @@ def _ensure_async_subagent_server(
     # here, not just in deploy/WebUI. Gated on the server being up (whether
     # or not it serves this project): warning about a bind that never
     # happened would be worse than saying nothing.
-    bind_host = str(getattr(config, "langgraph_dev_host", _DEFAULT_HOST) or "").strip()
-    if (
-        bind_host
-        and not _is_loopback_host(bind_host)
-        and is_langgraph_dev_running(
-            port=int(getattr(config, "langgraph_dev_port", _DEFAULT_PORT)),
-            host=bind_host,
-        )
+    port, bind_host = configured_address(config)
+    if not _is_loopback_host(bind_host) and is_langgraph_dev_running(
+        port=port, host=bind_host
     ):
         console.print(
             "[bold white on red] ⚠ PUBLIC BIND [/bold white on red] "
@@ -2191,16 +2249,13 @@ def serve(
     _require_chatgpt_sign_in(config, interactive=False)
 
     # Auto-start ccproxy when Anthropic uses OAuth mode
-    _ccproxy_proc_serve = None
-    if config.anthropic_auth_mode == "oauth":
+    if uses_oauth(config):
         try:
-            from ..ccproxy_manager import maybe_start_ccproxy, stop_ccproxy
+            from ..ccproxy_manager import maybe_start_ccproxy
 
-            _ccproxy_proc_serve = maybe_start_ccproxy(config)
-            if _ccproxy_proc_serve:
-                import atexit
-
-                atexit.register(stop_ccproxy, _ccproxy_proc_serve)
+            # It outlives this session, for every session and the background
+            # server to share (EvoSci ccproxy stop / service stop).
+            maybe_start_ccproxy(config, lasting=True)
         except RuntimeError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
@@ -3174,16 +3229,13 @@ def _main_callback(
     _require_chatgpt_sign_in(config, interactive=_interactive_start(prompt))
 
     # Auto-start ccproxy when Anthropic uses OAuth mode
-    _ccproxy_proc = None
-    if config.anthropic_auth_mode == "oauth":
+    if uses_oauth(config):
         try:
-            from ..ccproxy_manager import maybe_start_ccproxy, stop_ccproxy
+            from ..ccproxy_manager import maybe_start_ccproxy
 
-            _ccproxy_proc = maybe_start_ccproxy(config)
-            if _ccproxy_proc:
-                import atexit
-
-                atexit.register(stop_ccproxy, _ccproxy_proc)
+            # It outlives this session, for every session and the background
+            # server to share (EvoSci ccproxy stop / service stop).
+            maybe_start_ccproxy(config, lasting=True)
         except RuntimeError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc

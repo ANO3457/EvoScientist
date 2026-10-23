@@ -140,8 +140,10 @@ def _run_deploy_once(
         tunnel=False,
         config_fingerprint=None,
         allowed_origins="",
+        lasting=True,
     ):
         captured["langgraph_dev_started"] = True
+        captured["lasting"] = lasting
         captured["allowed_origins_passed"] = allowed_origins
         captured["workspace_passed"] = str(workspace_dir) if workspace_dir else None
         captured["port_passed"] = port

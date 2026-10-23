@@ -164,19 +164,16 @@ def run_webui(config: Any, workspace_dir: str | None = None) -> None:
         status_box.clear()
     # start() has already spawned the backend (unless reused) and the front-end;
     # register teardown now so a Ctrl+C while the output below renders still
-    # stops them. Idempotent, and honours keepalive inside launcher.stop().
+    # stops the front-end. Idempotent; the backend outlives the WebUI.
     atexit.register(launcher.stop)
 
     if result.backend_started:
         console.print("[green]✓[/green] langgraph dev ready")
-        if cfg.keepalive:
-            # Keepalive: the backend outlives this session so the
-            # next same-workspace launch reuses it instantly. The front-end
-            # below still stops on exit as usual.
-            console.print(
-                "[dim]keepalive: backend server stays up after exit — "
-                "stop it with [bold]EvoSci server stop[/bold].[/dim]"
-            )
+        console.print(
+            "[dim]The backend server keeps running after the WebUI closes, for "
+            "every EvoSci session — stop it with [bold]EvoSci server stop"
+            "[/bold].[/dim]"
+        )
     else:
         console.print(
             f"[green]✓[/green] Reusing langgraph dev already serving "

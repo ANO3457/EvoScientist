@@ -454,7 +454,6 @@ def test_probe_fails_with_the_output_when_the_server_exits(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_stage_runs_after_research_env():
     ids = [s.id for s in STAGES]
-    assert ids[-1] == "webui"
     assert ids.index("research-env") < ids.index("webui")
 
 

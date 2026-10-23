@@ -1284,7 +1284,7 @@ def _build_hitl_interrupt_on(
     the session grant, :func:`_hitl_when_served` (a served graph) only under
     ``hitl_suppressed``. Otherwise a graph built once for an unattended session
     would silently disable HITL for a later attended session on the same
-    keepalive server. Passing it to ``create_deep_agent`` (not ``HumanInTheLoopMiddleware``)
+    shared server. Passing it to ``create_deep_agent`` (not ``HumanInTheLoopMiddleware``)
     lets declarative sub-agents inherit it while ``AsyncSubAgent`` specs do not —
     so async agents can't hang on an approval nobody can deliver.
     """

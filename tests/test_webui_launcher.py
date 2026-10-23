@@ -34,7 +34,6 @@ def _make_config(
     langgraph_dev_host: str = "127.0.0.1",
     webui_port: int = 4716,
     webui_host: str = "127.0.0.1",
-    langgraph_dev_keepalive: bool = False,
 ):
     return SimpleNamespace(
         default_workdir=default_workdir,
@@ -44,7 +43,6 @@ def _make_config(
         webui_host=webui_host,
         langgraph_dev_jobs_per_worker=10,
         langgraph_dev_file_persistence=True,
-        langgraph_dev_keepalive=langgraph_dev_keepalive,
     )
 
 
@@ -446,26 +444,16 @@ def test_no_remote_hint_when_both_exposed(monkeypatch):
 
 
 # =============================================================================
-# Backend keepalive
+# The backend outlives the WebUI
 # =============================================================================
 
 
-def test_backend_default_stops_backend_on_exit(monkeypatch):
-    """Without keepalive the WebUI-started backend dies with the session.
-
-    Teardown moved into ``launcher.stop`` (registered via atexit and also run in
-    the finally block): the contract is now "stop_langgraph_dev is called", not
-    "which callable was handed to atexit"."""
+def test_backend_outlives_webui(monkeypatch):
+    """The backend the WebUI started is shared by every session: closing the
+    WebUI stops only its front-end."""
     captured = _run_webui_once(monkeypatch, _make_config())
-    assert captured["stop_calls"] >= 1
-    assert captured["atexit_fns"], "launcher.stop must be registered for teardown"
-
-
-def test_backend_keepalive_leaves_backend_running(monkeypatch):
-    """With keepalive the backend outlives the WebUI session, so the next
-    same-workspace launch reuses it instead of paying the cold boot."""
-    captured = _run_webui_once(monkeypatch, _make_config(langgraph_dev_keepalive=True))
     assert captured["stop_calls"] == 0
+    assert captured["atexit_fns"], "launcher.stop must be registered for teardown"
 
 
 def test_teardown_registered_before_output_is_rendered(monkeypatch):

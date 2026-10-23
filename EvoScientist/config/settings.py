@@ -318,15 +318,6 @@ class EvoScientistConfig:
     # slowdown.
     langgraph_dev_jobs_per_worker: int = 10
 
-    # Keep the auto-started langgraph dev subprocess running after the CLI
-    # exits. The next `EvoSci` start (CLI, TUI, serve, channels), in any
-    # project, reuses it instantly instead of paying the cold boot (~15s); the
-    # WebUI and `deploy --json` reuse one started from their own project.
-    # Known limitation: changing langgraph_dev_port/host while a keepalive
-    # server runs orphans its records — run `EvoSci server stop` before
-    # switching.
-    langgraph_dev_keepalive: bool = False
-
     # Which backend serves the CLI/TUI's graph runs: the in-process local
     # gateway (default) or the langgraph dev server via LangGraphServerGateway.
     # Server-gateway-migration rollback flag: flipping back to "local" restores
@@ -1293,7 +1284,6 @@ _ENV_MAPPINGS = {
     "sandbox_execute_timeout": "EVOSCIENTIST_SANDBOX_EXECUTE_TIMEOUT",
     "langgraph_dev_file_persistence": "EVOSCIENTIST_LANGGRAPH_DEV_FILE_PERSISTENCE",
     "langgraph_dev_jobs_per_worker": "EVOSCIENTIST_LANGGRAPH_DEV_JOBS_PER_WORKER",
-    "langgraph_dev_keepalive": "EVOSCIENTIST_LANGGRAPH_DEV_KEEPALIVE",
     "recursion_limit": "EVOSCIENTIST_RECURSION_LIMIT",
     "memory_profile_enabled": "EVOSCIENTIST_MEMORY_PROFILE_ENABLED",
     "memory_observations_enabled": "EVOSCIENTIST_MEMORY_OBSERVATIONS_ENABLED",
@@ -1368,9 +1358,9 @@ def env_origins() -> dict[str, dict[str, str]]:
 
 # Config fields that provably never reach the langgraph dev server: the
 # channel stack + STT run in the CLI process, display/workspace/frontend knobs
-# shape the CLI itself, and keepalive is a lifecycle flag. Everything else
-# counts as server config (the drift fingerprint, the settings API's restart
-# hint), so a newly added field defaults to "affects the server".
+# shape the CLI itself. Everything else counts as server config (the drift
+# fingerprint, the settings API's restart hint), so a newly added field
+# defaults to "affects the server".
 CLIENT_ONLY_PREFIXES = (
     "channel_",
     "imessage_",
@@ -1400,7 +1390,6 @@ CLIENT_ONLY_FIELDS = frozenset(
         "default_workdir",
         "webui_port",
         "webui_host",
-        "langgraph_dev_keepalive",
         "shell_allow_list",
         "mirror",
     }
@@ -1430,7 +1419,6 @@ DOTENV_FIELDS = frozenset(
         "gateway_backend_interactive",
         "gateway_backend_tui",
         "gateway_backend_standalone",
-        "langgraph_dev_keepalive",
         "channel_debug_tracing",
     }
 )

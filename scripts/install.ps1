@@ -542,6 +542,7 @@ if own_extras:
         }
         Write-Info 'Next steps:'
         Write-Info '  EvoSci onboard          set up your model provider and API keys'
+        Write-Info '  EvoSci service start    start the background agent service, shared by every session'
         Write-Info '  EvoSci                  start the terminal UI'
         Write-Info '  EvoSci --ui webui       start the WebUI'
     } finally {

@@ -397,7 +397,7 @@ def test_start_registration_failure_tears_the_backend_down(monkeypatch):
         raise registration.RegistrationError("setup failed")
 
     monkeypatch.setattr(registration, "register_folder", fail)
-    launcher = lm.WebUILauncher(object(), _cfg(keepalive=False), _FakeRunner())
+    launcher = lm.WebUILauncher(object(), _cfg(), _FakeRunner())
 
     with pytest.raises(lm.LauncherError) as ei:
         launcher.start()
@@ -418,7 +418,7 @@ def test_start_failure_after_backend_start_tears_the_backend_down(monkeypatch):
         def start(self, cfg, env):
             raise RuntimeError("node failed to spawn")
 
-    launcher = lm.WebUILauncher(object(), _cfg(keepalive=False), _FailingRunner())
+    launcher = lm.WebUILauncher(object(), _cfg(), _FailingRunner())
     with pytest.raises(RuntimeError, match="node failed"):
         launcher.start()
     assert len(stopped) == 1
@@ -451,7 +451,7 @@ def test_stop_during_blocked_backend_start_cancels_and_tears_down(monkeypatch):
         lgm, "stop_langgraph_dev", lambda proc=None: stopped.append(proc)
     )
 
-    launcher = lm.WebUILauncher(object(), _cfg(keepalive=False), _FakeRunner())
+    launcher = lm.WebUILauncher(object(), _cfg(), _FakeRunner())
     errors: list[BaseException] = []
 
     def _boot():
@@ -488,7 +488,7 @@ def test_stop_during_backend_health_wait_reports_cancelled(monkeypatch):
     monkeypatch.setattr(
         lgm, "stop_inflight_owned_server", lambda: (killed.set(), 4321)[1]
     )
-    launcher = lm.WebUILauncher(object(), _cfg(keepalive=False), _FakeRunner())
+    launcher = lm.WebUILauncher(object(), _cfg(), _FakeRunner())
     errors: list[BaseException] = []
 
     def _boot():
@@ -695,7 +695,7 @@ def test_stop_mid_backend_start_stops_only_owned_process(monkeypatch):
         "stop_recorded_server",
         lambda: calls.append("disk"),  # must NOT fire
     )
-    launcher = lm.WebUILauncher(object(), _cfg(keepalive=False), _FakeRunner())
+    launcher = lm.WebUILauncher(object(), _cfg(), _FakeRunner())
     # Simulate being inside _start_backend's blocking call: start initiated,
     # no proc handle assigned yet.
     launcher._backend_start_initiated = True
@@ -1192,14 +1192,12 @@ def test_build_launcher_config_resolves_ports_and_workspace(monkeypatch, tmp_pat
         langgraph_dev_host="127.0.0.1",
         webui_port=4000,
         webui_host="0.0.0.0",
-        langgraph_dev_keepalive=True,
     )
     cfg = lm.build_launcher_config(config, workspace_dir=None)
     assert cfg.workspace_dir == str(Path(tmp_path).resolve())
     assert cfg.backend_port == 6000
     assert cfg.webui_port == 4000
     assert cfg.webui_host == "0.0.0.0"
-    assert cfg.keepalive is True
     assert cfg.open_browser is True
 
 
