@@ -126,6 +126,28 @@ class TestResolveCommand:
         assert Path(result).stem.lower() in ("python", "python3")
         assert result != "python"  # resolved, not the bare name
 
+    @pytest.mark.skipif(os.name == "nt", reason="finds commands by PATHEXT")
+    def test_relative_command_made_absolute(self, tmp_path, monkeypatch):
+        """The stdio transport looks up a relative command again, on the
+        event loop, where ``langgraph dev`` refuses the disk access."""
+        tool = tmp_path / "srv.sh"
+        tool.write_text("#!/bin/sh\n")
+        tool.chmod(0o755)
+        monkeypatch.chdir(tmp_path)
+
+        assert Path(_resolve_command("./srv.sh")) == tool
+
+    def test_windows_venv_exe_found_next_to_python(self, tmp_path, monkeypatch):
+        """A venv console script on Windows is ``<name>.exe``."""
+        (tmp_path / "my-mcp-tool.exe").write_text("")
+        monkeypatch.setattr("shutil.which", lambda _: None)
+        monkeypatch.setattr(
+            "EvoScientist.mcp.client.sys.executable", str(tmp_path / "python.exe")
+        )
+        monkeypatch.setattr("EvoScientist.mcp.client.os.name", "nt")
+
+        assert _resolve_command("my-mcp-tool") == str(tmp_path / "my-mcp-tool.exe")
+
     def test_found_in_python_bin(self, tmp_path, monkeypatch):
         """Falls back to sys.executable's directory when not in PATH."""
 
@@ -2242,6 +2264,26 @@ class TestLoadToolsProgressCallback:
         import langchain_mcp_adapters.client as lc_client
 
         monkeypatch.setattr(lc_client, "MultiServerMCPClient", _FakeClient)
+
+    async def test_connections_build_off_event_loop(self, monkeypatch):
+        """Resolving a stdio command touches the disk, which blockbuster
+        refuses on an event loop inside ``langgraph dev``."""
+        from EvoScientist.mcp import client as mcp_client
+
+        loops = []
+
+        def build(config):
+            try:
+                loops.append(asyncio.get_running_loop())
+            except RuntimeError:
+                loops.append(None)
+            return {}
+
+        monkeypatch.setattr(mcp_client, "_build_connections", build)
+
+        await mcp_client._load_tools({"srv": {"transport": "stdio", "command": "x"}})
+
+        assert loops == [None]
 
     async def test_success_emits_start_then_success_with_tool_count(self, monkeypatch):
         from EvoScientist.mcp.client import _load_tools

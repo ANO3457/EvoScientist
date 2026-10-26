@@ -39,13 +39,13 @@ logger = logging.getLogger(__name__)
 # issue #283; the other is the Selector-loop subprocess fallback handled by
 # ``EvoScientist._winloop``).
 #
-# ``_resolve_command()`` (below) already resolves bare command names to their
-# absolute paths at connection-build time — a sync context where blocking is
-# fine. So by the time the stdio transport asks for the executable, the command
-# is already absolute and there is nothing left to look up. We short-circuit the
-# SDK's resolver for absolute paths, avoiding the ``os.access()`` entirely; bare
-# commands (which shouldn't reach here, but might via a transport we don't build)
-# still fall through to the original SDK behaviour.
+# ``_resolve_command()`` (below) resolves commands to absolute paths at
+# connection-build time, which runs off the event loop. So by the time the
+# stdio transport asks for the executable, a command it found is absolute and
+# there is nothing left to look up. We short-circuit the SDK's resolver for
+# absolute paths, avoiding the ``os.access()`` entirely. A command found
+# nowhere still falls through to the original SDK behaviour (its own
+# ``.cmd``/``.bat`` search); it fails to start otherwise.
 
 
 def _patch_mcp_windows_command_resolver() -> None:
@@ -896,16 +896,20 @@ def _resolve_command(command: str) -> str:
 
     Checks PATH first, then the current Python environment's bin directory
     (handles conda/venv envs where newly installed binaries may not be on PATH).
-    Returns the original command string if not found (let the OS report the error).
+    A command found is made absolute (``./srv.sh`` is read against the
+    current directory), so the stdio transport has nothing left to look up.
+    A command found nowhere is returned as given (let the OS report the error).
     """
     if os.path.isabs(command):
         return command
     found = shutil.which(command)
     if found:
-        return found
+        return os.path.abspath(found)
     candidate = os.path.join(os.path.dirname(sys.executable), command)
     if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
         return candidate
+    if os.name == "nt" and os.path.isfile(candidate + ".exe"):
+        return candidate + ".exe"
     return command
 
 
@@ -1132,7 +1136,9 @@ async def _load_tools(
     # May download Node (in the CLI process only); off the event loop so the
     # running session stays responsive.
     await asyncio.to_thread(_ensure_node_for_stdio, config)
-    connections = _build_connections(config)
+    # Resolving stdio commands touches the disk (``shutil.which``), which
+    # blockbuster refuses on an event loop inside ``langgraph dev``.
+    connections = await asyncio.to_thread(_build_connections, config)
     if not connections:
         return {}
 
