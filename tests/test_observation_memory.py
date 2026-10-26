@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import threading
-from collections.abc import Sequence
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
@@ -13,11 +12,7 @@ import pytest
 import yaml
 from blockbuster import BlockBuster
 from langchain.agents.middleware.types import AgentState
-from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
-from langchain_core.tools import BaseTool
-from langgraph.runtime import ExecutionInfo, Runtime
 from pydantic import BaseModel
 
 from EvoScientist.config import EvoScientistConfig, MemoryObservationWriter
@@ -53,6 +48,14 @@ from EvoScientist.memory.observations import (
 from EvoScientist.memory.search import _tokens
 from EvoScientist.memory.types import ObservationRelation
 from EvoScientist.middleware import memory_lifecycle
+from tests.fakes.memory import (
+    fake_runtime,
+    linker_context,
+    memory_source_context,
+    record_observation_payload,
+    tool_by_name,
+    tool_runtime,
+)
 
 
 def _read_memory_document(path) -> tuple[dict[str, Any], str]:
@@ -79,63 +82,6 @@ def _markdown_sections(body: str) -> dict[str, str]:
         end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
         sections[match.group("title")] = body[start:end].strip()
     return sections
-
-
-def _execution_info(thread_id: str | None = None) -> ExecutionInfo:
-    return ExecutionInfo(
-        checkpoint_id="checkpoint-1",
-        checkpoint_ns="",
-        task_id="task-1",
-        thread_id=thread_id,
-    )
-
-
-def _tool_runtime(
-    tool: Any,
-    *,
-    config: RunnableConfig | None = None,
-    thread_id: str | None = None,
-    tool_call_id: str | None = None,
-) -> ToolRuntime:
-    runtime_config: RunnableConfig = config if config is not None else {}
-    return ToolRuntime(
-        state={},
-        context=None,
-        config=runtime_config,
-        stream_writer=lambda _chunk: None,
-        tool_call_id=tool_call_id,
-        store=None,
-        tools=[tool],
-        execution_info=_execution_info(thread_id),
-        server_info=None,
-    )
-
-
-def _runtime(thread_id: str | None = None) -> Runtime[None]:
-    return Runtime(execution_info=_execution_info(thread_id))
-
-
-def _memory_source_context(
-    *,
-    memory_dir,
-    workspace_dir,
-    source_type: MemorySourceType = MemorySourceType.TURN,
-    project_id: str = "P-project",
-    source_agent: str = "EvoScientist",
-    session_id: str = "thread-1",
-    trajectory: list[source_context.CompactMessage] | None = None,
-) -> source_context.MemorySourceContext:
-    context_trajectory = trajectory or [{"role": "human", "content": "hi"}]
-    return source_context.MemorySourceContext(
-        source_type=source_type,
-        memory_dir=memory_dir,
-        workspace_dir=workspace_dir,
-        project_id=project_id,
-        source_agent=source_agent,
-        session_id=session_id,
-        trajectory=context_trajectory,
-        trajectory_digest=source_context._trajectory_digest(context_trajectory),
-    )
 
 
 def _memory_worker_run(
@@ -181,21 +127,6 @@ def _observation_linker_run(
     )
 
 
-def _linker_context(
-    *,
-    memory_dir,
-    workspace_dir,
-    observation_ids: tuple[str, ...],
-    project_id: str = "P-project",
-) -> memory_scheduler.ObservationLinkerContext:
-    return memory_scheduler.ObservationLinkerContext(
-        memory_dir=memory_dir,
-        workspace_dir=workspace_dir,
-        project_id=project_id,
-        observation_ids=observation_ids,
-    )
-
-
 def _mark_worker_started(
     memory_dir,
     *,
@@ -238,35 +169,6 @@ def _record_test_observation(
 
 def _memory_relative_path(record: dict[str, Any]) -> str:
     return record["path"].removeprefix("/memories/")
-
-
-def _record_observation_payload(
-    tool: Any,
-    *,
-    runtime: ToolRuntime,
-    memory_type: MemoryType,
-    summary: str,
-    observation: str,
-    why_it_matters: str,
-    scope: MemoryScope,
-) -> dict[str, Any]:
-    payload = tool.run(
-        {
-            "memory_type": memory_type,
-            "summary": summary,
-            "observation": observation,
-            "why_it_matters": why_it_matters,
-            "scope": scope,
-            "runtime": runtime,
-        }
-    )
-    return json.loads(payload)
-
-
-def _tool_by_name(tools: Sequence[BaseTool], name: str) -> BaseTool:
-    matches = [tool for tool in tools if tool.name == name]
-    assert len(matches) == 1
-    return matches[0]
 
 
 def _fast_watcher_config(
@@ -323,7 +225,8 @@ def test_record_observation_file_writes_contract_and_dedupes(tmp_path):
     metadata, body = _read_memory_document(path)
 
     assert first["created"] is True
-    assert second == {**first, "created": False}
+    assert second == {**first, "created": False, "note": second["note"]}
+    assert "identical observation already exists" in second["note"]
     assert first["path"] == (
         f"/memories/observations/projects/P-project/{first['observation_id']}.md"
     )
@@ -869,7 +772,7 @@ def test_link_observations_tool_uses_runtime_project_id(tmp_path):
         memory_dir=memories,
         project_id="wrong-project",
     )
-    runtime = _tool_runtime(
+    runtime = tool_runtime(
         tool,
         config={"configurable": {"evomemory_project_id": "P-runtime"}},
     )
@@ -1021,7 +924,7 @@ def test_read_and_search_observation_tools_use_runtime_project_id(tmp_path):
         memory_dir=memories,
         project_id="wrong-project",
     )
-    search_runtime = _tool_runtime(
+    search_runtime = tool_runtime(
         search_tool,
         config={"configurable": {"evomemory_project_id": "P-runtime"}},
     )
@@ -1042,7 +945,7 @@ def test_read_and_search_observation_tools_use_runtime_project_id(tmp_path):
         memory_dir=memories,
         project_id="wrong-project",
     )
-    read_runtime = _tool_runtime(
+    read_runtime = tool_runtime(
         read_tool,
         config={"configurable": {"evomemory_project_id": "P-runtime"}},
     )
@@ -1594,10 +1497,10 @@ def test_record_observation_tool_can_use_worker_config_source(tmp_path):
         source_type=MemorySourceType.SUBAGENT,
         source_agent="evomemory-subagent-worker",
     )
-    tool = _tool_by_name(middleware.tools, "record_observation")
-    payload = _record_observation_payload(
+    tool = tool_by_name(middleware.tools, "record_observation")
+    payload = record_observation_payload(
         tool,
-        runtime=_tool_runtime(
+        runtime=tool_runtime(
             tool,
             tool_call_id="tool-1",
             config={
@@ -1644,7 +1547,7 @@ def test_record_observation_tool_schema_hides_runtime(tmp_path):
         workspace_dir=workspace,
     )
 
-    tool = _tool_by_name(middleware.tools, "record_observation")
+    tool = tool_by_name(middleware.tools, "record_observation")
     assert "runtime" in tool.get_input_schema().model_fields
     schema = tool.tool_call_schema
     assert isinstance(schema, type)
@@ -1670,10 +1573,10 @@ def test_record_observation_tool_keeps_injected_runtime_through_validation(tmp_p
         source_type=MemorySourceType.TURN,
         source_agent="EvoScientist",
     )
-    tool = _tool_by_name(middleware.tools, "record_observation")
-    payload = _record_observation_payload(
+    tool = tool_by_name(middleware.tools, "record_observation")
+    payload = record_observation_payload(
         tool,
-        runtime=_tool_runtime(
+        runtime=tool_runtime(
             tool,
             config={"configurable": {"thread_id": "thread-from-runtime"}},
             tool_call_id="tool-1",
@@ -1713,11 +1616,11 @@ def test_record_observation_tool_skips_without_runtime_thread_id(tmp_path):
         workspace_dir=workspace,
         memory_scheduler=coordinator,
     )
-    tool = _tool_by_name(middleware.tools, "record_observation")
+    tool = tool_by_name(middleware.tools, "record_observation")
 
-    payload = _record_observation_payload(
+    payload = record_observation_payload(
         tool,
-        runtime=_tool_runtime(tool),
+        runtime=tool_runtime(tool),
         memory_type=MemoryType.SEMANTIC,
         summary="Unthreaded observations are skipped.",
         observation="Observation recording needs source session provenance.",
@@ -1745,11 +1648,11 @@ def test_direct_record_observation_queues_linking_until_worker_finish(tmp_path):
         workspace_dir=workspace,
         memory_scheduler=coordinator,
     )
-    tool = _tool_by_name(middleware.tools, "record_observation")
+    tool = tool_by_name(middleware.tools, "record_observation")
 
-    payload = _record_observation_payload(
+    payload = record_observation_payload(
         tool,
-        runtime=_tool_runtime(tool, thread_id="source-thread"),
+        runtime=tool_runtime(tool, thread_id="source-thread"),
         memory_type=MemoryType.PROCEDURAL,
         summary="Direct observations link after worker finish.",
         observation=(
@@ -1785,7 +1688,7 @@ def test_direct_record_observation_queues_linking_until_worker_finish(tmp_path):
     hooks.on_finished(worker_run)
 
     assert launched == [
-        _linker_context(
+        linker_context(
             memory_dir=memory_dir,
             workspace_dir=workspace,
             project_id=middleware.project_id,
@@ -1952,7 +1855,7 @@ async def test_lifecycle_schedules_turn_worker_without_awaiting(tmp_path, monkey
         source_agent="EvoScientist",
         memory_scheduler=coordinator,
     )
-    runtime = _runtime("thread-1")
+    runtime = fake_runtime("thread-1")
 
     state: AgentState[object] = {
         "messages": [
@@ -1980,7 +1883,7 @@ async def test_lifecycle_schedules_turn_worker_without_awaiting(tmp_path, monkey
     observation = _record_test_observation(memory_dir)
     hooks.on_finished(worker_run)
     assert launched == [
-        _linker_context(
+        linker_context(
             memory_dir=memory_dir,
             workspace_dir=workspace_dir,
             observation_ids=(observation["observation_id"],),
@@ -2003,7 +1906,7 @@ def test_lifecycle_skips_memory_worker_without_runtime_thread_id(tmp_path, monke
 
     middleware.after_agent(
         {"messages": [HumanMessage("hi"), AIMessage("done", name="EvoScientist")]},
-        _runtime(),
+        fake_runtime(),
     )
 
 
@@ -2029,7 +1932,7 @@ def test_subagent_summary_writer_uses_worker_metadata(tmp_path, monkeypatch):
     }
     middleware.after_agent(
         state,
-        _runtime(),
+        fake_runtime(),
     )
 
     paths = list((tmp_path / "memories" / "executions" / "thread-1").glob("*.md"))
@@ -2063,7 +1966,7 @@ def test_memory_worker_run_payload_use_server_thread_id_and_source_metadata(
     trajectory: list[source_context.CompactMessage] = [
         {"role": "human", "content": "hi"}
     ]
-    context = _memory_source_context(
+    context = memory_source_context(
         memory_dir="/memories",
         workspace_dir="/active/workspace",
         source_type=MemorySourceType.SUBAGENT,
@@ -2123,7 +2026,7 @@ def test_memory_worker_finish_launches_linker_for_new_observations(
     )
 
     assert launched == [
-        _linker_context(
+        linker_context(
             memory_dir=memory_dir,
             workspace_dir=workspace_dir,
             observation_ids=(observation["observation_id"],),
@@ -2303,7 +2206,7 @@ def test_memory_worker_linker_flushes_pending_batch_when_last_worker_aborts(tmp_
     )
 
     assert launched == [
-        _linker_context(
+        linker_context(
             memory_dir=memory_dir,
             workspace_dir=workspace_dir,
             observation_ids=(observation["observation_id"],),
@@ -2361,7 +2264,7 @@ def test_memory_worker_abort_queues_written_observations_for_linking(tmp_path):
     )
 
     assert launched == [
-        _linker_context(
+        linker_context(
             memory_dir=memory_dir,
             workspace_dir=workspace_dir,
             observation_ids=(observation["observation_id"],),
@@ -2399,7 +2302,7 @@ def test_memory_worker_watcher_start_failure_queues_written_observations_for_lin
     hooks.on_watcher_start_failed(worker_run)
 
     assert launched == [
-        _linker_context(
+        linker_context(
             memory_dir=memory_dir,
             workspace_dir=workspace_dir,
             observation_ids=(observation["observation_id"],),
@@ -2411,7 +2314,7 @@ def test_memory_worker_watcher_start_failure_queues_written_observations_for_lin
 
 
 def test_observation_linker_launch_request_encodes_batch_context(tmp_path):
-    context = _linker_context(
+    context = linker_context(
         memory_dir=tmp_path / "memories",
         workspace_dir=tmp_path / "workspace",
         observation_ids=("O-2", "O-1"),
@@ -2435,7 +2338,7 @@ def test_observation_linker_does_not_launch_when_observations_disabled(
     tmp_path,
     monkeypatch,
 ):
-    context = _linker_context(
+    context = linker_context(
         memory_dir=tmp_path / "memories",
         workspace_dir=tmp_path / "workspace",
         observation_ids=("O-1",),
@@ -2458,7 +2361,7 @@ async def test_async_observation_linker_does_not_launch_when_observations_disabl
     tmp_path,
     monkeypatch,
 ):
-    context = _linker_context(
+    context = linker_context(
         memory_dir=tmp_path / "memories",
         workspace_dir=tmp_path / "workspace",
         observation_ids=("O-1",),
@@ -2531,7 +2434,7 @@ def test_subagent_worker_uses_tool_calling_without_thinking_on_deepseek(
 
     from EvoScientist.llm import get_chat_model
     from EvoScientist.memory.agents._factory import build_memory_agent_graph
-    from tests.fakes import deepseek_tool_call_response
+    from tests.fakes.common import deepseek_tool_call_response
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     bodies: list[dict[str, Any]] = []
@@ -2820,7 +2723,7 @@ def test_memory_worker_skips_when_langgraph_dev_unavailable(tmp_path, monkeypatc
     )
     middleware.after_agent(
         {"messages": [HumanMessage("hi"), AIMessage("done", name="EvoScientist")]},
-        _runtime("thread-1"),
+        fake_runtime("thread-1"),
     )
 
 
@@ -2850,7 +2753,7 @@ def test_memory_worker_marks_active_status(tmp_path, monkeypatch):
     ]
 
     memory_dir = tmp_path / "memories"
-    context = _memory_source_context(
+    context = memory_source_context(
         memory_dir=memory_dir,
         workspace_dir=tmp_path / "workspace",
         trajectory=trajectory,
@@ -2944,7 +2847,7 @@ async def test_async_memory_worker_offloads_blocking_work(tmp_path, monkeypatch)
     spawned: list[background_runs.BackgroundRun] = []
 
     event_loop_thread = threading.get_ident()
-    context = _memory_source_context(
+    context = memory_source_context(
         memory_dir=tmp_path / "memories",
         workspace_dir=tmp_path / "workspace",
         trajectory=[{"role": "human", "content": "hi"}],
@@ -3143,7 +3046,7 @@ def test_memory_pipeline_waits_while_observation_linker_is_launching(tmp_path):
 
     coordinator = memory_scheduler.MemoryScheduler(launch_linker=launch_linker)
     coordinator.record_observation_created(
-        _linker_context(
+        linker_context(
             memory_dir=tmp_path / "memories",
             workspace_dir=tmp_path / "workspace",
             observation_ids=("O-1",),
@@ -3728,100 +3631,67 @@ class TestObservationCache:
         )
         assert len(docs1) == len(docs2)
 
-    def test_concurrent_calls_survive_cache_eviction(self, tmp_path, monkeypatch):
-        """Concurrent callers must not race the eviction path.
+    @pytest.mark.parametrize("cached", [True, False], ids=["hit", "parse"])
+    def test_cache_trim_waits_for_in_flight_recency_update(
+        self, tmp_path, monkeypatch, cached
+    ):
+        """Another call's trim cannot evict an entry between its lookup or
+        insert and its recency update.
 
-        A tiny cap forces ``_trim_parse_cache`` to evict on every call while
-        several threads hit ``list_observation_documents`` at once. Without
-        serialized cache transactions, one thread can evict a key between
-        another thread's lookup and recency update (KeyError), or between its
-        insert and recency update. The switch interval is shrunk so the GIL
-        switches threads inside those windows often enough to make the race
-        reproducible; it is restored before the test exits.
-
-        The hammer is deadline-bounded rather than iteration-bounded: a fixed
-        iteration count overran the 30s CI per-test timeout on Windows runners
-        (context switches and file I/O are much slower there), while on fast
-        runners a fixed count needlessly capped race coverage. A deadline
-        finishes within budget on every platform and still maximizes race
-        opportunities where threads are cheap.
-
-        All workers park at a ``threading.Barrier`` and the deadline is armed
-        in the barrier's action, so the clock starts only when every worker is
-        ready and thread startup cannot consume the window. Each worker counts
-        its iterations and the test asserts all of them made progress, so it
-        cannot pass vacuously if a worker never ran.
+        One call is held inside that window (``move_to_end`` is the recency
+        update on both paths); a second call that would evict the entry runs
+        straight to trim, since its directory has no files and the cap is 0.
+        It must block until the first call is released. Unserialized, the
+        first raises KeyError.
         """
-        import sys
-        import threading
-        import time
+        from collections import OrderedDict
 
         from EvoScientist.memory.observations import store
 
-        memories_a = tmp_path / "memories-a"
-        memories_b = tmp_path / "memories-b"
-        for memories in (memories_a, memories_b):
-            for index in range(1, 9):
-                _write_observation(
-                    memories / "observations" / "global" / f"O-{index}.md",
-                    f"O-{index}",
-                )
+        held_dir = tmp_path / "held"
+        empty_dir = tmp_path / "empty"
+        _write_observation(held_dir / "observations" / "global" / "O-1.md", "O-1")
+        monkeypatch.setattr(store, "_max_cached_files", lambda: 0)
+        if cached:
+            list_observation_documents(memory_dir=held_dir, project_id="P-test")
+        held_key = str(held_dir / "observations" / "global" / "O-1.md")
+        in_window = threading.Event()
+        release = threading.Event()
 
-        monkeypatch.setattr(store, "_max_cached_files", lambda: 1)
+        class _HoldingCache(OrderedDict):
+            def move_to_end(self, key, last=True):
+                if key == held_key and not in_window.is_set():
+                    in_window.set()
+                    release.wait(10.0)
+                super().move_to_end(key, last)
 
+        monkeypatch.setattr(
+            store, "_file_parse_cache", _HoldingCache(store._file_parse_cache)
+        )
         errors: list[BaseException] = []
-        memory_dirs = [
-            memories_a,
-            memories_a,
-            memories_a,
-            memories_b,
-            memories_b,
-            memories_b,
-        ]
-        iterations = [0] * len(memory_dirs)
-        deadline = 0.0
 
-        def _start_clock():
-            # The barrier runs this once, immediately before releasing every
-            # party, so the deadline begins only when all six workers are ready
-            # to hammer - thread startup cannot eat any worker's window.
-            nonlocal deadline
-            deadline = time.monotonic() + 8.0
-
-        gate = threading.Barrier(len(memory_dirs) + 1, action=_start_clock)
-
-        def _hammer(memory_dir, index):
-            gate.wait()
+        def _list(memory_dir):
             try:
-                while time.monotonic() < deadline and not errors:
-                    docs = list_observation_documents(
-                        memory_dir=memory_dir, project_id="P-test"
-                    )
-                    assert len(docs) == 8
-                    iterations[index] += 1
+                list_observation_documents(memory_dir=memory_dir, project_id="P-test")
             except BaseException as exc:
                 errors.append(exc)
 
-        threads = [
-            threading.Thread(target=_hammer, args=(memory_dir, index))
-            for index, memory_dir in enumerate(memory_dirs)
-        ]
-        old_interval = sys.getswitchinterval()
-        sys.setswitchinterval(1e-6)
-        try:
-            for thread in threads:
-                thread.start()
-            # Wait for all workers to reach the gate, then release them together.
-            gate.wait()
-            for thread in threads:
-                thread.join()
-        finally:
-            sys.setswitchinterval(old_interval)
+        held = threading.Thread(target=_list, args=(held_dir,))
+        trimming = threading.Thread(target=_list, args=(empty_dir,))
+        held.start()
+        assert in_window.wait(10.0)
+        trimming.start()
+        trimming.join(0.5)
+        # Unserialized, the trimming call has finished and evicted by now.
+        still_waiting = trimming.is_alive()
+        release.set()
+        held.join(10.0)
+        trimming.join(10.0)
 
-        assert errors == [], f"racing cache transactions raised: {errors[:3]}"
-        assert all(count > 0 for count in iterations), (
-            f"every worker must make progress, got iterations={iterations}"
-        )
+        assert not held.is_alive()
+        assert not trimming.is_alive()
+        assert errors == [], f"racing cache transactions raised: {errors}"
+        assert still_waiting, "the trimming call did not wait for the held call"
 
 
 def test_turn_compaction_starts_at_the_user_message_not_a_pinned_skill():

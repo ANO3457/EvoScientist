@@ -197,20 +197,17 @@ class TestServerRecord:
         """A project ``.env`` configures its own EvoSci command only: the
         shared server gets neither the setting nor its record."""
         from EvoScientist.langgraph_dev.manager import _server_env_origins
-        from tests.test_langgraph_dev_server_env import (
-            _patch_start_prereqs,
-            _PopenAbort,
-        )
+        from tests.fakes.langgraph_dev import PopenAbort, patch_start_prereqs
 
         dotenv = tmp_path / ".env"
         dotenv.write_text("EVOSCIENTIST_UI_BACKEND=cli\n", encoding="utf-8")
         monkeypatch.setattr(settings, "find_dotenv", lambda *a, **k: str(dotenv))
         monkeypatch.delenv("EVOSCIENTIST_UI_BACKEND", raising=False)
         assert get_effective_config().ui_backend == "cli"
-        captured = _patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+        captured = patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
         from EvoScientist.langgraph_dev import manager
 
-        with pytest.raises(_PopenAbort):
+        with pytest.raises(PopenAbort):
             manager.start_langgraph_dev(workspace_dir=tmp_path, port=16178)
 
         assert "EVOSCIENTIST_UI_BACKEND" not in captured["env"]

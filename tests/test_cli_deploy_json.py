@@ -25,6 +25,7 @@ from EvoScientist.deploy import server as deploy_server
 from EvoScientist.langgraph_dev import registration
 from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
 from EvoScientist.paths import Workspace
+from tests.fakes.langgraph_dev import LockHolder
 
 
 def _config(**overrides):
@@ -84,6 +85,7 @@ class Harness:
         # closed; "devnull"; or a file object.
         self.stdin_kind = "eof"
         self._stdin_write: int | None = None
+        self._stdin: Any = None
 
         # redirect_console_to_stderr() rebinds the shared console's file.
         monkeypatch.setattr(console, "_file", console._file)
@@ -176,6 +178,7 @@ class Harness:
             stdin = open(os.devnull)
         else:
             stdin = self.stdin_kind
+        self._stdin = stdin
         self.mp.setattr(sys, "stdin", stdin)
 
     def run(self, capsys, **kwargs) -> tuple[int, list[dict[str, Any]]]:
@@ -199,6 +202,9 @@ def h(monkeypatch, tmp_path):
     harness = Harness(monkeypatch, tmp_path)
     yield harness
     harness.close_stdin()  # lets a watcher left by an error run end
+    # The run's watcher reads its own copy of the descriptor.
+    if harness._stdin is not None:
+        harness._stdin.close()
 
 
 def _wait_for_stdin_watcher():
@@ -914,37 +920,11 @@ def test_a_pipe_stdin_is_not_handed_on(h, capsys):
     assert stdin_is_pipe() is False
 
 
-class _LockHolder:
-    """Another process's start: holds the start lock until released."""
-
-    def __init__(self) -> None:
-        from filelock import FileLock
-
-        from EvoScientist.langgraph_dev import manager as lgm
-
-        lgm.RUNTIME.pid_dir.mkdir(parents=True, exist_ok=True)
-        self.lock = FileLock(str(lgm.RUNTIME.lock_file))
-        self.held = threading.Event()
-        self.release = threading.Event()
-        self.thread = threading.Thread(target=self._hold, daemon=True)
-        self.thread.start()
-        assert self.held.wait(5)
-
-    def _hold(self) -> None:
-        with self.lock:
-            self.held.set()
-            self.release.wait(10)
-
-    def done(self) -> None:
-        self.release.set()
-        self.thread.join(5)
-
-
 def test_a_second_start_waits_for_the_lock(h, capsys, monkeypatch):
     """Decision and start wait until another start released the lock."""
     from EvoScientist.langgraph_dev import manager as lgm
 
-    holder = _LockHolder()
+    holder = LockHolder()
     decided: list[bool] = []
     occupied = lgm._is_port_occupied
 
@@ -962,7 +942,7 @@ def test_a_second_start_waits_for_the_lock(h, capsys, monkeypatch):
 
 
 def test_a_stop_while_waiting_for_the_lock_starts_nothing(h, capsys):
-    holder = _LockHolder()
+    holder = LockHolder()
     threading.Timer(0.3, h.close_stdin).start()
     try:
         code, lines = h.run(capsys)
@@ -977,7 +957,7 @@ def test_a_lock_held_too_long_is_backend_start_failed(h, capsys, monkeypatch):
     from EvoScientist.langgraph_dev import manager as lgm
 
     monkeypatch.setattr(lgm, "_FILE_LOCK_TIMEOUT", 0.2)
-    holder = _LockHolder()
+    holder = LockHolder()
     try:
         code, lines = h.run(capsys)
     finally:
@@ -1090,8 +1070,9 @@ def test_stdin_kinds(tmp_path, monkeypatch):
             assert stdin_is_pipe() is expected, name
         if sys.platform != "win32":
             ours, theirs = socket.socketpair()
-            monkeypatch.setattr(sys, "stdin", os.fdopen(ours.detach(), "r"))
-            assert stdin_is_pipe() is True
+            with os.fdopen(ours.detach(), "r") as stdin:
+                monkeypatch.setattr(sys, "stdin", stdin)
+                assert stdin_is_pipe() is True
             theirs.close()
     finally:
         os.close(write)
@@ -1198,6 +1179,7 @@ def test_subprocess_with_closed_stdout_exits_zero(tmp_path):
     proc.stdin.close()
     assert proc.wait(timeout=30) == 0
     err = proc.stderr.read()
+    proc.stderr.close()
     assert b"stopped backend" in err
     assert b"Exception ignored" not in err
     assert b"BrokenPipeError" not in err

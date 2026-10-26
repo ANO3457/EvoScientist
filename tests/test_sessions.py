@@ -2011,7 +2011,8 @@ class TestReduceMessagesDeltaUpstreamParity:
     """
 
     @pytest.fixture(scope="class")
-    def upstream(self):
+    @classmethod
+    def upstream(cls):
         return _import_upstream_reducer()
 
     def _assert_parity(self, upstream, state, writes):

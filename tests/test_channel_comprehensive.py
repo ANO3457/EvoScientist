@@ -47,8 +47,8 @@ from EvoScientist.runtime import AsyncRuntime, AsyncRuntimeError
 # ═══════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════
-from tests.fakes import FakeChannelConfig as _FakeConfig
-from tests.fakes import FakeGraphGateway, StubChannel
+from tests.fakes.common import FakeChannelConfig as _FakeConfig
+from tests.fakes.common import FakeGraphGateway, StubChannel
 
 
 class ManualClock:

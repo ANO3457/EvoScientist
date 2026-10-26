@@ -232,11 +232,16 @@ def _run_webui_once(
     monkeypatch.setattr(signal, "signal", lambda _sig, _handler: lambda *a: None)
     monkeypatch.setattr(threading, "Event", _ImmediateEvent)
 
-    if interrupt_on:
-        with pytest.raises(KeyboardInterrupt):
+    try:
+        if interrupt_on:
+            with pytest.raises(KeyboardInterrupt):
+                webui_mod.run_webui(config, workspace_dir="/tmp/ws")
+        else:
             webui_mod.run_webui(config, workspace_dir="/tmp/ws")
-    else:
-        webui_mod.run_webui(config, workspace_dir="/tmp/ws")
+    finally:
+        # The registered teardown closes it at exit; the tests never run it.
+        if captured.get("node_stdout") is not None:
+            captured["node_stdout"].close()
     return captured
 
 
@@ -321,9 +326,9 @@ def test_a_crashed_webui_points_at_webui_log(monkeypatch):
 def test_an_unwritable_start_lock_shows_the_failed_panel(monkeypatch, tmp_path):
     import typer
 
-    from tests.test_launcher import _break_start_lock
+    from tests.fakes.langgraph_dev import break_start_lock
 
-    _break_start_lock(monkeypatch, tmp_path, "mkdir")
+    break_start_lock(monkeypatch, tmp_path, "mkdir")
     with pytest.raises(typer.Exit):
         _run_webui_once(monkeypatch, _make_config())
     panel = webui_mod.console._sink[-1]
@@ -334,9 +339,9 @@ def test_an_unwritable_start_lock_shows_the_failed_panel(monkeypatch, tmp_path):
 def test_the_spinner_says_when_it_waits_for_another_start(monkeypatch):
     """While another process holds the server start lock the spinner says so,
     as EvoSci deploy does, then goes back to starting langgraph dev."""
-    from tests.test_cli_deploy_json import _LockHolder
+    from tests.fakes.langgraph_dev import LockHolder
 
-    holder = _LockHolder()
+    holder = LockHolder()
 
     class _ReleasingLauncher(webui_mod.WebUILauncher):
         """Frees the other start's lock once the wait has been reported."""

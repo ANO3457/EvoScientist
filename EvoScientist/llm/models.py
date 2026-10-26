@@ -30,19 +30,18 @@ from .patches import (
     _patch_anthropic_structured_output,
     _patch_openai_compat_content,
     _patch_openai_responses_whole_tool_args,
-    _patch_openrouter_strip_responses_reasoning,
     _patch_openrouter_structured_output,
 )
 from .registry import (
     _ANTHROPIC_ROUTED_PROVIDERS,
     _MODEL_ENTRIES,
     _OPENAI_ROUTED_PROVIDERS,
-    _OPENROUTER_JSON_SCHEMA_STRUCTURED_OUTPUT_MODELS,  # noqa: F401 — re-exported
     _THINKING_CAPABLE_PROVIDERS,
     DEFAULT_MODEL,
     MODELS,
     UnknownModelError,
     _is_mandatory_thinking_kimi,
+    _openrouter_needs_json_schema,  # noqa: F401 — re-exported
     get_model_info,  # noqa: F401 — re-exported for existing import sites
     get_models_for_provider,  # noqa: F401 — re-exported for existing import sites
     list_model_picker_entries,  # noqa: F401 — re-exported for existing import sites
@@ -169,6 +168,65 @@ def _env_flag_enabled(name: str) -> bool:
 def _env_flag_disabled(name: str) -> bool:
     value = os.environ.get(name)
     return value is not None and value.strip().lower() in _FALSEY_ENV_VALUES
+
+
+# Providers for which a placeholder-key warning has already been emitted, so
+# the message is not repeated on every model build (once per process).
+_PLACEHOLDER_WARNED: set[str] = set()
+
+
+def _require_routed_api_key(
+    provider: str,
+    api_key_env: str,
+    kwargs: dict[str, Any],
+    *,
+    allow_placeholder: bool = False,
+) -> str:
+    """Resolve a routed provider's API key, or fail fast.
+
+    A routed provider (one that shares the OpenAI / Anthropic vendor SDK but
+    points at a different ``base_url``) must not silently fall back to the
+    vendor key, which would send the routed provider's requests to the wrong
+    host with the user's vendor credentials.
+
+    Args:
+        provider: Name of the routed provider (e.g. ``"minimax"``).
+        api_key_env: Environment variable name for the provider's own key.
+        kwargs: Keyword arguments passed through to ``get_chat_model``.
+        allow_placeholder: When True, inject ``"not-needed"`` instead of
+            raising (used by ``custom-*`` providers, which cover keyless
+            local servers such as vLLM / LM Studio).
+
+    Returns:
+        The resolved API key (env var, explicit kwarg, or ``"not-needed"``).
+
+    Raises:
+        ValueError: with a clear message naming the missing env var.
+    """
+    # Read the env var once; callers use the returned value and don't re-read it.
+    api_key = os.environ.get(api_key_env, "")
+    if api_key:
+        return api_key
+    if kwargs.get("api_key"):
+        return kwargs["api_key"]
+    if allow_placeholder:
+        # Gateways that used to authenticate with OPENAI_API_KEY /
+        # ANTHROPIC_API_KEY need to set CUSTOM_*_API_KEY explicitly -- users
+        # never see docstrings, so warn once and name the config key.
+        if provider not in _PLACEHOLDER_WARNED:
+            _PLACEHOLDER_WARNED.add(provider)
+            warnings.warn(
+                f"No `{api_key_env.lower()}` is set; sending a placeholder key. "
+                "Set it if your endpoint requires authentication.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return "not-needed"
+    raise ValueError(
+        f"The '{provider}' provider requires an API key. Please set the "
+        f"{api_key_env} environment variable (or configure it in your "
+        "config.yaml / .env) before using this provider."
+    )
 
 
 def _supports_openrouter_anthropic_prompt_cache(
@@ -323,6 +381,9 @@ def _apply_auto_config(
         elif _is_current_claude(model_id):
             kwargs["thinking"] = {"type": "adaptive", "display": "summarized"}
             kwargs.setdefault("effort", "max")
+        elif original_provider == "minimax":
+            # MiniMax takes only `adaptive` (M3.1 Flash rejects `disabled`), no budget.
+            kwargs["thinking"] = {"type": "adaptive"}
         else:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": 10000}
 
@@ -385,7 +446,13 @@ def get_chat_model(
             if name == model and p == provider:
                 model_id = mid
                 break
-    if model_id is None and model in MODELS:
+    # Routers keep to their own entries: another provider's id may name an
+    # older or different model there.
+    if (
+        model_id is None
+        and model in MODELS
+        and provider not in ("openrouter", "requesty")
+    ):
         model_id, default_provider = MODELS[model]
         provider = provider or default_provider
 
@@ -407,7 +474,7 @@ def get_chat_model(
                 provider = "anthropic"  # Default fallback
 
     # Routers address models as ``vendor/model``; a bare id here is a short
-    # name that is no longer in the registry (or another provider's id).
+    # name outside this router's list.
     if provider in ("openrouter", "requesty") and "/" not in model_id:
         raise UnknownModelError(
             f"Model {model!r} is not in EvoScientist's {provider} model list "
@@ -468,19 +535,22 @@ def get_chat_model(
             base_url = base_url_default
         if base_url:
             kwargs["base_url"] = base_url
-        api_key = os.environ.get(api_key_env, "")
-        if api_key:
-            kwargs["api_key"] = api_key
+        kwargs["api_key"] = _require_routed_api_key(
+            provider,
+            api_key_env,
+            kwargs,
+            allow_placeholder=provider == "custom-openai",
+        )
         _apply_openai_compat_reasoning_config(provider, model_id, kwargs)
         # SiliconFlow: disable thinking — LangChain drops reasoning_content
         # from history, causing error 20015 on multi-turn requests.
         if provider == "siliconflow":
             kwargs.setdefault("extra_body", {})["enable_thinking"] = False
-        # Moonshot: disable thinking for pre-K3 models to prevent LangChain from
-        # dropping reasoning_content, which causes multi-turn conversation errors
-        # (error 20015). Even native thinking models like kimi-k2-thinking operate
-        # in non-thinking mode. kimi-k3+ is exempt: always-thinking, and
-        # Moonshot's K3 guide forbids the K2.x `thinking` parameter for it.
+        # Moonshot: disable thinking for pre-K3 models (K2.x, still served to
+        # existing users until the end of 2026) so LangChain does not drop
+        # reasoning_content, which causes multi-turn errors (error 20015).
+        # kimi-k3+ is exempt: always-thinking, and Moonshot's K3 guide forbids
+        # the K2.x `thinking` parameter for it.
         if provider == "moonshot" and not model_id.startswith("kimi-k3"):
             kwargs.setdefault("extra_body", {})["thinking"] = {"type": "disabled"}
         provider = "openai"
@@ -492,11 +562,8 @@ def get_chat_model(
         if api_key:
             kwargs["api_key"] = api_key
         # Reasoning via `effort` + `summary: "auto"` so a readable reasoning
-        # summary is returned for display. OpenAI-Responses also emits encrypted
-        # reasoning items (`rs_*` id) that can't be replayed on multi-turn
-        # passback (OpenRouter's `/responses` beta is stateless, store=false —
-        # "Item with id 'rs_...' not found"); the patch strips them on passback,
-        # so enabling `summary` is safe. See langchain-ai/langchain#37777.
+        # summary is returned for display; langchain-openrouter drops the
+        # ephemeral `rs_` ids before replaying encrypted reasoning items.
         # Note: mandatory-reasoning endpoints (kimi-k3, grok-4.5, …) reject
         # effort "none" with HTTP 400 — that error is surfaced to the user
         # as-is; pick a real effort (low+) for those models.
@@ -553,7 +620,6 @@ def get_chat_model(
             _app_categories = _app_categories[:_limit]
         if _app_categories:
             kwargs.setdefault("app_categories", _app_categories)
-        _patch_openrouter_strip_responses_reasoning()
         _patch_openrouter_structured_output()
 
     # Anthropic-routed providers → route through Anthropic provider with base_url
@@ -578,15 +644,18 @@ def get_chat_model(
             base_url = base_url_default
         if base_url:
             kwargs["base_url"] = base_url
-        api_key = os.environ.get(api_key_env, "")
-        if api_key:
-            kwargs["api_key"] = api_key
+        kwargs["api_key"] = _require_routed_api_key(
+            provider,
+            api_key_env,
+            kwargs,
+            allow_placeholder=provider == "custom-anthropic",
+        )
         # Kimi Coding Plan requires claude-code User-Agent header
         if provider == "kimi-coding":
             kwargs.setdefault("default_headers", {})["User-Agent"] = "claude-code/0.1.0"
-        # MiMo ids have no langchain profile, so ChatAnthropic would fall back to
-        # 4096; match the server's own default (131072) instead.
-        if provider in ("xiaomi", "xiaomi-token-plan"):
+        # MiMo and MiniMax ids have no langchain profile, so ChatAnthropic would
+        # fall back to 4096; use the 131072 both vendors document instead.
+        if provider in ("xiaomi", "xiaomi-token-plan", "minimax"):
             kwargs.setdefault("max_tokens", 131072)
         provider = "anthropic"
 
