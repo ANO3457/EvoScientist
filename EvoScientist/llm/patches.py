@@ -934,9 +934,9 @@ def _merge_runs_config_kwargs(
     """Merge the live model override into ``kwargs`` for ``runs.create``.
 
     ``folders`` are the launching graph's ``workspace_dir`` / ``run_dir``;
-    they replace any the caller passed, so the server can refuse a run meant
-    for other folders. A run named by its graph goes to that graph's
-    assistant for the folders' workspace, which stands for the project.
+    they replace any the caller passed. A run named by its graph goes to that
+    graph's assistant for the folders' workspace, which stands for the
+    project; the server reads the run folder from ``run_dir``.
 
     Model source, in increasing precedence:
 

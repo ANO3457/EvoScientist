@@ -39,8 +39,16 @@ def served(workspace, projects) -> SessionDirs:
     return SessionDirs(workspace, workspace.runs_dir / RUN)
 
 
-def _config(dirs: SessionDirs | None) -> dict:
-    return {"configurable": dirs.metadata() if dirs is not None else {}}
+def _on(workspace: Workspace, graph_id: str = "writing-agent", **configurable) -> dict:
+    """A run's ``configurable`` on *workspace*'s assistant for *graph_id*."""
+    return {"assistant_id": workspace_assistant_id(graph_id, workspace), **configurable}
+
+
+def _config(dirs: SessionDirs | None, graph_id: str = "writing-agent") -> dict:
+    """An access's config for *dirs*, through its workspace assistant."""
+    if dirs is None:
+        return {"configurable": {}}
+    return {"configurable": {**dirs.metadata(), **_on(dirs.workspace, graph_id)}}
 
 
 def _resolve(access, configurable, *, bound=None, graph_id="writing-agent"):
@@ -59,62 +67,60 @@ def _run(configurable, *, bound=None, graph_id="writing-agent"):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.usefixtures("served")
-def test_runs_naming_no_project_are_refused():
-    """No workspace assistant, no folder, no binding: nowhere to work."""
-    with pytest.raises(RunFolderMismatchError, match="names no workspace"):
-        _run({})
+def test_runs_naming_no_project_are_refused(served, tmp_path):
+    """A new conversation runs on a workspace assistant: a folder the run
+    forwards on a graph's own assistant names no project, nor does the
+    assistant of a project this server never knew."""
+    unknown = _on(Workspace(tmp_path / "unknown"))
+    for configurable in ({}, served.metadata(), unknown):
+        with pytest.raises(RunFolderMismatchError) as exc:
+            _run(configurable)
+        assert not isinstance(exc.value, ProjectNotServedError)
 
 
 def test_runs_on_unregistered_project_are_refused(projects, workspace):
-    """Never registered, or unregistered: one error."""
-    configurable = SessionDirs(workspace).metadata()
-    with pytest.raises(ProjectNotServedError, match="does not serve") as exc:
-        _run(configurable)
-    assert not exc.value.missing_folder
     projects.set_registered(workspace.key, False)
-    with pytest.raises(ProjectNotServedError, match="does not serve"):
-        _run(configurable)
+    with pytest.raises(ProjectNotServedError) as exc:
+        _run(_on(workspace))
+    assert not exc.value.missing_folder
 
 
 def test_runs_in_missing_folder_are_refused(served):
     served.workspace.root.rmdir()
-    with pytest.raises(ProjectNotServedError, match="does not serve") as exc:
-        _run(served.metadata())
+    with pytest.raises(ProjectNotServedError) as exc:
+        _run(_on(served.workspace))
     assert exc.value.missing_folder
 
 
 def test_runs_for_served_folders_run(served, tmp_path):
-    assert _run(served.metadata()) == served
+    assert _run(_on(served.workspace, run_dir=str(served.run_dir))) == served
 
-    # The same folders written another way: a symlink and a trailing slash.
+    # The same run folder written another way: through a symlink.
     link = tmp_path / "link"
     link.symlink_to(served.workspace.root, target_is_directory=True)
-    assert (
-        _run({"workspace_dir": f"{link}/", "run_dir": str(link / "runs" / RUN)})
-        == served
-    )
+    assert _run(_on(served.workspace, run_dir=str(link / "runs" / RUN))) == served
 
 
-def test_runs_for_other_workspace_are_refused(served, tmp_path):
-    other = SessionDirs(Workspace(tmp_path / "other"))
+def test_runs_for_other_workspace_are_refused(served, projects, tmp_path):
+    other = Workspace(tmp_path / "other")
+    projects.set_registered(other.key, False)
     for graph_id in ("writing-agent", "scheduler"):
         with pytest.raises(ProjectNotServedError) as exc:
-            _run(other.metadata(), graph_id=graph_id)
-        assert str(other.workspace.root) in str(exc.value)
+            _run(_on(other, graph_id), graph_id=graph_id)
+        assert exc.value.workspace == other
 
 
-def test_resolve_folders_refuses_unreadable_folders(served):
-    """Present but unreadable is a mismatch, not a run without folders."""
-    for workspace_dir in ("/tmp/evil\x00x", 123, "relative/ws"):
-        with pytest.raises(RunFolderMismatchError, match="cannot read"):
-            _run({"workspace_dir": workspace_dir})
-    # Every graph reads the run folder, including those that work in the root.
+def test_resolve_folders_refuses_unreadable_run_folders(served):
+    """Present but unreadable is a mismatch, not a run without folders.
+    Every graph reads the run folder, including those that work in the root."""
     for graph_id in ("writing-agent", "scheduler"):
+        root = SessionDirs(served.workspace)
+        assert _run(_on(served.workspace, graph_id), graph_id=graph_id) == root
         for run_dir in ("/tmp/evil\x00x", 123, f"runs/{RUN}"):
-            configurable = {"workspace_dir": served.workspace.key, "run_dir": run_dir}
-            with pytest.raises(RunFolderMismatchError, match="cannot read"):
-                _run(configurable, graph_id=graph_id)
+            with pytest.raises(RunFolderMismatchError):
+                _run(
+                    _on(served.workspace, graph_id, run_dir=run_dir), graph_id=graph_id
+                )
 
 
 @pytest.mark.parametrize("graph_id", ["writing-agent", "scheduler"])
@@ -125,11 +131,9 @@ def test_resolve_folders_refuses_unreadable_folders(served):
 def test_resolve_folders_refuses_run_dir_outside_workspace_runs(
     served, tmp_path, run_dir, graph_id
 ):
+    configurable = _on(served.workspace, graph_id, run_dir=str(tmp_path / run_dir))
     with pytest.raises(RunFolderMismatchError, match="not a run folder"):
-        _run(
-            {"workspace_dir": served.workspace.key, "run_dir": str(tmp_path / run_dir)},
-            graph_id=graph_id,
-        )
+        _run(configurable, graph_id=graph_id)
 
 
 def test_resolve_folders_refuses_runs_folder_linked_outside_workspace(served, tmp_path):
@@ -138,35 +142,31 @@ def test_resolve_folders_refuses_runs_folder_linked_outside_workspace(served, tm
     disk = tmp_path / "disk"
     disk.mkdir()
     workspace.runs_dir.symlink_to(disk, target_is_directory=True)
-    configurable = {
-        "workspace_dir": workspace.key,
-        "run_dir": str(workspace.runs_dir / RUN),
-    }
+    configurable = _on(workspace, run_dir=str(workspace.runs_dir / RUN))
     with pytest.raises(RunFolderMismatchError, match="not a run folder"):
         _run(configurable)
 
 
 def test_resolve_folders_refuses_relative_run_dir(served):
-    configurable = {"workspace_dir": served.workspace.key, "run_dir": f"runs/{RUN}"}
+    configurable = _on(served.workspace, run_dir=f"runs/{RUN}")
     with pytest.raises(RunFolderMismatchError, match="not an absolute path"):
         _run(configurable)
 
 
 def test_resolve_folders_reads_project_root_as_no_run_folder(served):
-    configurable = {
-        "workspace_dir": served.workspace.key,
-        "run_dir": served.workspace.key,
-    }
+    configurable = _on(served.workspace, run_dir=served.workspace.key)
     assert _run(configurable) == SessionDirs(served.workspace)
 
 
 def test_runs_work_in_any_run_folder_of_served_project(served):
     other_run = SessionDirs(served.workspace, served.workspace.runs_dir / "other")
-    assert _run(other_run.metadata()) == other_run
+    run_dir = str(other_run.run_dir)
+    assert _run(_on(served.workspace, run_dir=run_dir)) == other_run
     # Scheduled tasks and memory workers work in the root, whatever run
     # folder the run forwards.
     root = SessionDirs(served.workspace)
-    assert _run(other_run.metadata(), graph_id="scheduler") == root
+    scheduled = _on(served.workspace, "scheduler", run_dir=run_dir)
+    assert _run(scheduled, graph_id="scheduler") == root
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +207,26 @@ def test_runs_for_other_run_folder_than_binding_are_refused(served):
         _run(served.metadata(), bound=bound)
     assert "This conversation works in" in str(exc.value)
     assert str(bound.run_dir) in str(exc.value)
+
+
+def test_runs_on_other_project_assistant_are_refused_on_bound_thread(
+    served, projects, tmp_path
+):
+    """A workspace assistant names its project: a thread bound to one served
+    project does not continue in another."""
+    other = Workspace(tmp_path / "other")
+    other.root.mkdir()
+    projects.set_registered(other.key, True)
+    with pytest.raises(RunFolderMismatchError) as exc:
+        _run(_on(other), bound=served)
+    assert not isinstance(exc.value, ProjectNotServedError)
+
+
+def test_runs_on_graph_assistant_ignore_forwarded_workspace(served, tmp_path):
+    """On a graph's own assistant a bound thread keeps working in its
+    binding, whatever workspace the run forwards."""
+    other = SessionDirs(Workspace(tmp_path / "other"))
+    assert _run(other.metadata(), bound=served) == served
 
 
 @pytest.mark.parametrize("graph_id", ["writing-agent", "scheduler"])
@@ -298,7 +318,7 @@ def factory_env(served, monkeypatch):
     return graph
 
 
-def test_factory_hands_folders_to_checkpointer(served, factory_env, tmp_path):
+def test_factory_hands_folders_to_checkpointer(served, projects, factory_env, tmp_path):
     factory = served_graph("writing-agent")
 
     async def access(config, context):
@@ -307,10 +327,10 @@ def test_factory_hands_folders_to_checkpointer(served, factory_env, tmp_path):
 
     assert asyncio.run(access(_config(served), RUN_ACCESS)) == (factory_env, served)
     assert asyncio.run(access(_config(served), "threads.read")) == (factory_env, None)
-    with pytest.raises(RunFolderMismatchError):
-        asyncio.run(
-            access(_config(SessionDirs(Workspace(tmp_path / "other"))), RUN_ACCESS)
-        )
+    other = SessionDirs(Workspace(tmp_path / "other"))
+    projects.set_registered(other.workspace.key, False)
+    with pytest.raises(ProjectNotServedError):
+        asyncio.run(access(_config(other), RUN_ACCESS))
 
 
 async def test_checkpoint_writes_see_factory_folders(tiny_graph, served, monkeypatch):
@@ -331,7 +351,8 @@ async def test_checkpoint_writes_see_factory_folders(tiny_graph, served, monkeyp
     graph.checkpointer = Recording()
     monkeypatch.setattr(factories, "GRAPHS", _Built(graph))
     monkeypatch.setattr(factories, "thread_binding", lambda _thread_id: None)
-    config = {"configurable": {"thread_id": "t", **served.metadata()}}
+    config = _config(served)
+    config["configurable"]["thread_id"] = "t"
 
     built = await served_graph("writing-agent")(
         config, SimpleNamespace(access_context=RUN_ACCESS)
@@ -580,7 +601,7 @@ def test_manual_autoskills_runs_forward_the_root(workspace, monkeypatch):
     )
 
 
-def test_registered_graphs_refuse_other_workspace(served, factory_env):
+def test_registered_graphs_refuse_other_workspace(served, projects, factory_env):
     """Every registered graph refuses another workspace and runs in any run
     folder of the served one."""
     import importlib
@@ -590,19 +611,18 @@ def test_registered_graphs_refuse_other_workspace(served, factory_env):
     registry = json.loads(
         (Path(factories.__file__).parent / "langgraph.json").read_text()
     )["graphs"]
-    other_run = _config(
-        SessionDirs(served.workspace, served.workspace.runs_dir / "other")
-    )
-    other_workspace = _config(SessionDirs(Workspace(served.workspace.root / "other")))
+    other_run = SessionDirs(served.workspace, served.workspace.runs_dir / "other")
+    other_workspace = SessionDirs(Workspace(served.workspace.root / "other"))
+    projects.set_registered(other_workspace.workspace.key, False)
     running = SimpleNamespace(access_context=RUN_ACCESS)
     assert FOLDER_GRAPH_IDS <= registry.keys()
 
-    for target in registry.values():
+    for graph_id, target in registry.items():
         module_path, attr = target.rsplit(":", 1)
         factory = getattr(importlib.import_module(module_path), attr)
-        with pytest.raises(RunFolderMismatchError):
-            asyncio.run(factory(other_workspace, running))
-        asyncio.run(factory(other_run, running))
+        with pytest.raises(ProjectNotServedError):
+            asyncio.run(factory(_config(other_workspace, graph_id), running))
+        asyncio.run(factory(_config(other_run, graph_id), running))
 
 
 def test_async_task_check_reports_why_a_run_was_refused(workspace):

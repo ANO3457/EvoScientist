@@ -674,8 +674,10 @@ class LangGraphServerGateway:
         """Assemble this run's config, reading the live session config here.
 
         The target's folders go in last and replace any a caller put in
-        ``configurable_extra``, so the server checks the run against the
-        folders the session works in and can refuse it when it serves others.
+        ``configurable_extra``. The server reads the run's project from its
+        assistant (or its thread's binding) and the run folder from
+        ``run_dir``, and refuses a run folder that is not one of that
+        project's.
 
         ``_ensure_config`` returns the cached, in-place-mutated session
         config — NOT a fresh disk read — so mid-session ``/model`` edits that

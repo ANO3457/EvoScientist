@@ -83,13 +83,11 @@ def _runs_create_kwargs(
 ) -> BackgroundRunPayload:
     """Merge the live model and the run's folders into *payload*.
 
-    Memory belongs to the workspace, so a run forwards its root and the
-    server checks that.
+    Memory belongs to the workspace, so a run goes to the workspace
+    assistant of its root, which the server reads the project from.
     """
-    try:
-        from EvoScientist.llm.patches import _merge_runs_config_kwargs
-    except Exception:
-        return payload
+    from EvoScientist.llm.patches import _merge_runs_config_kwargs
+
     return cast(
         "BackgroundRunPayload",
         _merge_runs_config_kwargs(

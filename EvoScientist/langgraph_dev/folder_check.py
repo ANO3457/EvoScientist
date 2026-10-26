@@ -8,11 +8,12 @@ factory decides the folders here and hands them to the checkpointer, which
 ignores whatever folders the request carried.
 
 - A run is for the project its workspace assistant stands for (any project
-  the registry knows); on a graph's own assistant, for the project it
-  forwards in ``configurable``, else its thread's. On a bound thread it works
-  in the binding, and is refused when it names another project or run
-  folder; on a new thread it works in the run folder it forwards, or the
-  project root. A run that names no project is refused.
+  the registry knows); on a graph's own assistant, for its thread's. On a
+  bound thread it works in the binding, and is refused when it names another
+  project or run folder; on a new thread it works in the run folder it
+  forwards, or the project root. A run on a new thread that is not on a
+  workspace assistant names no project, and is refused; a ``workspace_dir``
+  it forwards does not count.
 - A state update works in its thread's binding and binds nothing.
 - A run or update is refused when its project is not served: not
   registered, or its folder is missing.
@@ -88,27 +89,15 @@ def _read_forwarded(value: Any, what: str) -> Path:
         ) from exc
 
 
-def read_workspace(value: Any) -> Workspace:
-    """The project a client names, read as :func:`_read_forwarded` does."""
-    return Workspace(_read_forwarded(value, "workspace"))
-
-
 def read_workspace_or_none(value: Any) -> Workspace | None:
-    """The project a client names, or ``None`` when it names none it can read."""
+    """The project a client names, read as :func:`_read_forwarded` does, or
+    ``None`` when it names none it can read."""
     if not value:
         return None
     try:
-        return read_workspace(value)
+        return Workspace(_read_forwarded(value, "workspace"))
     except RunFolderMismatchError:
         return None
-
-
-def _forwarded_workspace(configurable: dict[str, Any]) -> Workspace | None:
-    """The project a run forwards in ``workspace_dir``, or ``None``."""
-    workspace_dir = configurable.get("workspace_dir")
-    if not workspace_dir:
-        return None
-    return read_workspace(workspace_dir)
 
 
 def _forwarded_run_dir(configurable: dict[str, Any], project: Workspace) -> Path | None:
@@ -148,15 +137,12 @@ def _project_of(
     A workspace assistant stands for its project, whatever ``workspace_dir``
     the run's ``configurable`` holds: the runtime merges into it the stored
     config of the thread, which keeps the first workspace assistant the
-    thread ever ran on. A run on a graph's own assistant is for the project
-    it forwards, or else its thread's.
+    thread ever ran on. A run on a graph's own assistant is for its thread's
+    project.
     """
     project = registry.project_of_assistant(graph_id, configurable.get("assistant_id"))
     if project is not None:
         return project
-    forwarded = _forwarded_workspace(configurable)
-    if forwarded is not None:
-        return forwarded
     return bound.workspace if bound is not None else None
 
 
@@ -199,9 +185,11 @@ def resolve_folders(
     project = _project_of(graph_id, configurable, registry, bound)
     if project is None:
         raise RunFolderMismatchError(
-            "The run names no workspace: this EvoScientist server needs every "
-            "new conversation to run on a workspace assistant. Update an older "
-            "EvoScientist client."
+            "The run names no workspace this server knows. Start a new "
+            "conversation on the graph's workspace assistant for a registered "
+            "project (search assistants by graph_id and metadata.workspace_dir; "
+            "opening EvoScientist in a project registers it), or update an "
+            "older EvoScientist client."
         )
     if bound is not None and bound.workspace != project:
         raise RunFolderMismatchError(
