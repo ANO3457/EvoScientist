@@ -488,6 +488,7 @@ def test_unregister_workspace_route_keeps_project_and_drops_system_crons(
     server, secret, projects, monkeypatch, workspace
 ):
     projects.set_registered(workspace.key, True)
+    workspace_setup.SET_UP.add(workspace.key)
     rows = [
         {
             "cron_id": "task",
@@ -517,6 +518,7 @@ def test_unregister_workspace_route_keeps_project_and_drops_system_crons(
     assert response.status_code == 200
     assert deleted == ["skills"]
     assert not projects.is_registered(workspace.key)
+    assert workspace.key not in workspace_setup.SET_UP
     assert projects.known() == {workspace.key}
     assert workspace.root.is_dir()
 

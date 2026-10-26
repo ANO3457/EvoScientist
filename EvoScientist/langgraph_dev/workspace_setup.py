@@ -3,10 +3,10 @@
 Registration (``POST /api/workspaces``) is a setup barrier: the project's
 threads are restored and its assistants created, and only then is it
 recorded as registered, which is what the factories serve while its folder
-exists; its AutoSkills cron is then reconciled with the configuration.
-Every step can run again; the restore runs once per project and
-server process. The
-server's start sets every registered project up again: a fresh runtime store
+exists; what its old runtime store has left is then imported, and its AutoSkills
+cron reconciled with the configuration.
+Every step can run again; the restore runs once per project and server process.
+The server's start sets every registered project up again: a fresh runtime store
 has none of their assistants. Graphs are built when first needed; the chat
 graph, which reads use, starts building in the background. Setup runs inside
 the server, through the runtime's own ops.
@@ -26,6 +26,9 @@ from .factories import GRAPHS
 logger = logging.getLogger(__name__)
 
 _lock: asyncio.Lock | None = None
+# The registered projects set up in this server process: their assistants
+# exist.
+SET_UP: set[str] = set()
 # Background builds, kept until done so they are not garbage-collected, and
 # run one at a time: builds take turns anyway (``GraphCache``), and one
 # waiting here holds no worker thread.
@@ -57,7 +60,32 @@ async def _set_up(workspace: Workspace, *, restore: bool) -> None:
             f"Could not create the workspace assistants for {workspace.root}: {exc}"
         ) from exc
     await asyncio.to_thread(registry.REGISTRY.set_registered, workspace.key, True)
+    SET_UP.add(workspace.key)
+    await _import_old_store(workspace)
     await _reconcile_autoskills(workspace)
+
+
+async def unregister_workspace(workspace: Workspace) -> None:
+    """Record *workspace* as no longer registered; the caller holds
+    :func:`registration_lock`."""
+    await asyncio.to_thread(registry.REGISTRY.set_registered, workspace.key, False)
+    SET_UP.discard(workspace.key)
+
+
+async def _import_old_store(workspace: Workspace) -> None:
+    """Import what *workspace*'s old runtime store has left to import (see
+    :mod:`~EvoScientist.langgraph_dev.legacy_import`). Logged on failure: the
+    project is served either way, and its next setup tries again."""
+    from .legacy_import import import_once
+
+    try:
+        await import_once(workspace)
+    except Exception:
+        logger.warning(
+            "Could not import the old store of %s; its next setup tries again.",
+            workspace.root,
+            exc_info=True,
+        )
 
 
 async def _reconcile_autoskills(workspace: Workspace) -> None:

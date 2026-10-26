@@ -419,7 +419,7 @@ def _fresh_dotenv_record(monkeypatch):
 def _fresh_registry(monkeypatch):
     """Each test reads the project registry from its own data folder,
     registers projects with a lock of its own event loop, and starts with no
-    threads restored."""
+    threads restored and no project set up."""
     import sys
 
     module = sys.modules.get("EvoScientist.langgraph_dev.registry")
@@ -429,6 +429,7 @@ def _fresh_registry(monkeypatch):
     if module is not None:
         monkeypatch.setattr(module, "_lock", None)
         monkeypatch.setattr(module, "_warm_lock", None)
+        monkeypatch.setattr(module, "SET_UP", set())
     module = sys.modules.get("EvoScientist.sessions")
     if module is not None:
         monkeypatch.setattr(module, "RESTORED_WORKSPACES", set())
@@ -470,9 +471,11 @@ def runtime_store(langgraph_api_env, monkeypatch):
     from langgraph_runtime_inmem.database import GLOBAL_STORE
 
     from EvoScientist.langgraph_dev.assistants import served_graph_ids
+    from EvoScientist.langgraph_dev.legacy_import import IMPORTED_KEY
 
     for graph_id in served_graph_ids():
         monkeypatch.setitem(lg_graph.GRAPHS, graph_id, object())
+    monkeypatch.setitem(GLOBAL_STORE, IMPORTED_KEY, {})
     tables = ("assistants", "assistant_versions", "threads", "runs", "crons")
     saved = {key: list(GLOBAL_STORE.get(key, [])) for key in tables}
     for key in tables:

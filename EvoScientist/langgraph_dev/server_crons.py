@@ -29,8 +29,21 @@ SYSTEM_RUN_KINDS = frozenset({AUTOSKILL_RUN_KIND, PROACTIVE_RUN_KIND})
 _SEARCH_LIMIT = 100_000
 
 
-def _run_kind(cron: dict[str, Any]) -> object:
-    return (cron.get("metadata") or {}).get("run_kind")
+def metadata_of(row: Any) -> dict[str, Any]:
+    """The metadata of a stored *row* (a cron, a thread), or an empty dict
+    when it has none, or the row is malformed."""
+    metadata = row.get("metadata") if isinstance(row, dict) else None
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _run_kind(cron: Any) -> str | None:
+    run_kind = metadata_of(cron).get("run_kind")
+    return run_kind if isinstance(run_kind, str) else None
+
+
+def is_system_cron(cron: Any) -> bool:
+    """Whether *cron* is an AutoSkills or proactive cron."""
+    return _run_kind(cron) in SYSTEM_RUN_KINDS
 
 
 async def project_crons(workspace: Workspace) -> list[dict[str, Any]]:
@@ -61,7 +74,7 @@ def enabled_user_crons(crons: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def system_crons(crons: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The AutoSkills and proactive crons among *crons*."""
-    return [cron for cron in crons if _run_kind(cron) in SYSTEM_RUN_KINDS]
+    return [cron for cron in crons if is_system_cron(cron)]
 
 
 async def _delete(conn: Any, cron_id: Any) -> None:
@@ -95,7 +108,7 @@ async def drop_system_cron(cron_id: str, workspace: Workspace) -> None:
         if not found:
             return
         (cron,) = found
-        if belongs_to(cron, workspace) and _run_kind(cron) in SYSTEM_RUN_KINDS:
+        if belongs_to(cron, workspace) and is_system_cron(cron):
             await _delete(conn, cron["cron_id"])
 
 
@@ -140,6 +153,15 @@ async def reconcile_autoskills(config: Any, workspaces: list[Workspace]) -> list
     return failed
 
 
+def request_payload(assistant_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    """The payload the HTTP route stores for a cron of *fields* (from
+    :func:`~EvoScientist.cron.schedule.cron_request`): its request body."""
+    return {
+        "assistant_id": assistant_id,
+        **{key: value for key, value in fields.items() if value is not None},
+    }
+
+
 async def _put(conn: Any, workspace: Workspace, cron: Any) -> None:
     """Create *cron* as the HTTP route would: its payload is the request
     body."""
@@ -153,10 +175,7 @@ async def _put(conn: Any, workspace: Workspace, cron: Any) -> None:
         metadata=cron.metadata,
         timezone=cron.timezone,
     )
-    payload = {
-        "assistant_id": assistant_id,
-        **{key: value for key, value in fields.items() if value is not None},
-    }
+    payload = request_payload(assistant_id, fields)
     async for _created in await Crons.put(
         conn,
         payload=payload,

@@ -391,7 +391,7 @@ async def _unregister(workspace: Workspace) -> JSONResponse:
     await server_crons.delete_crons(
         [cron["cron_id"] for cron in server_crons.system_crons(crons)]
     )
-    await asyncio.to_thread(REGISTRY.set_registered, workspace.key, False)
+    await workspace_setup.unregister_workspace(workspace)
     return JSONResponse({"workspace_dir": workspace.key})
 
 
