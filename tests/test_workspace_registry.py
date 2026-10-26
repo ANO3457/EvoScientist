@@ -391,8 +391,12 @@ def test_list_workspaces_shows_registered_projects(
 
     assert body == {
         "workspaces": [
-            {"workspace_dir": workspace.key, "missing": False},
-            {"workspace_dir": gone.key, "missing": True},
+            {
+                "workspace_dir": workspace.key,
+                "name": workspace.root.name,
+                "missing": False,
+            },
+            {"workspace_dir": gone.key, "name": "gone", "missing": True},
         ]
     }
 

@@ -12,8 +12,8 @@ ignores whatever folders the request carried.
   bound thread it works in the binding, and is refused when it names another
   project or run folder; on a new thread it works in the run folder it
   forwards, or the project root. A run on a new thread that is not on a
-  workspace assistant names no project, and is refused; a ``workspace_dir``
-  it forwards does not count.
+  workspace assistant names no project, and is refused
+  (:class:`NoProjectError`); a ``workspace_dir`` it forwards does not count.
 - A state update works in its thread's binding and binds nothing.
 - A run or update is refused when its project is not served: not
   registered, or its folder is missing.
@@ -38,6 +38,11 @@ from .registry import Registry
 
 class RunFolderMismatchError(RuntimeError):
     """An access for folders other than its thread's or this server's."""
+
+
+class NoProjectError(RunFolderMismatchError):
+    """A new conversation that names no project this server knows: it is not
+    on a project's workspace assistant."""
 
 
 class ProjectNotServedError(RunFolderMismatchError):
@@ -172,7 +177,11 @@ def resolve_folders(
 
     *access* is langgraph-api's access context; *bound* is the thread's
     binding (read for writes only). Raises :class:`RunFolderMismatchError`
-    for an access this server must not serve. Blocking: it checks folders.
+    for an access this server must not serve: exactly that class for a run
+    the thread's binding refuses (the name clients match),
+    :class:`ProjectNotServedError` for a project this server does not serve,
+    :class:`NoProjectError` for a new conversation that names no project.
+    Blocking: it checks folders.
     """
     if access not in ("threads.create_run", "threads.update"):
         return _read_folders(configurable, registry), None
@@ -184,7 +193,7 @@ def resolve_folders(
 
     project = _project_of(graph_id, configurable, registry, bound)
     if project is None:
-        raise RunFolderMismatchError(
+        raise NoProjectError(
             "The run names no workspace this server knows. Start a new "
             "conversation on the graph's workspace assistant for a registered "
             "project (search assistants by graph_id and metadata.workspace_dir; "

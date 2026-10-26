@@ -12,6 +12,7 @@ from EvoScientist.langgraph_dev import factories, registry
 from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
 from EvoScientist.langgraph_dev.factories import served_graph
 from EvoScientist.langgraph_dev.folder_check import (
+    NoProjectError,
     ProjectNotServedError,
     RunFolderMismatchError,
     neutral_dirs,
@@ -73,9 +74,8 @@ def test_runs_naming_no_project_are_refused(served, tmp_path):
     assistant of a project this server never knew."""
     unknown = _on(Workspace(tmp_path / "unknown"))
     for configurable in ({}, served.metadata(), unknown):
-        with pytest.raises(RunFolderMismatchError) as exc:
+        with pytest.raises(NoProjectError):
             _run(configurable)
-        assert not isinstance(exc.value, ProjectNotServedError)
 
 
 def test_runs_on_unregistered_project_are_refused(projects, workspace):
@@ -205,7 +205,8 @@ def test_runs_for_other_run_folder_than_binding_are_refused(served):
     bound = SessionDirs(served.workspace, served.workspace.runs_dir / "other")
     with pytest.raises(RunFolderMismatchError) as exc:
         _run(served.metadata(), bound=bound)
-    assert "This conversation works in" in str(exc.value)
+    # The binding refusal keeps the name the WebUI matches.
+    assert type(exc.value) is RunFolderMismatchError
     assert str(bound.run_dir) in str(exc.value)
 
 
@@ -219,7 +220,8 @@ def test_runs_on_other_project_assistant_are_refused_on_bound_thread(
     projects.set_registered(other.key, True)
     with pytest.raises(RunFolderMismatchError) as exc:
         _run(_on(other), bound=served)
-    assert not isinstance(exc.value, ProjectNotServedError)
+    # The binding refusal keeps the name the WebUI matches.
+    assert type(exc.value) is RunFolderMismatchError
 
 
 def test_runs_on_graph_assistant_ignore_forwarded_workspace(served, tmp_path):
@@ -472,7 +474,7 @@ async def test_refused_run_does_not_pin_thread_to_other_project(
     refused = await _runtime_run(
         workspace_assistant_id("EvoScientist", other), thread_id
     )
-    with pytest.raises(RunFolderMismatchError):
+    with pytest.raises(NoProjectError):
         await _create_run(refused)
     # The refused run errors, which frees the thread for the next run.
     for record in (*runtime_store["threads"], *runtime_store["runs"]):

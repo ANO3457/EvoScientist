@@ -311,17 +311,25 @@ async def get_workspace(_request: Request) -> JSONResponse:
 def _registered_projects() -> list[dict[str, object]]:
     from pathlib import Path
 
+    from EvoScientist.langgraph_dev.assistants import folder_name
     from EvoScientist.langgraph_dev.registry import REGISTRY
 
     return [
-        {"workspace_dir": key, "missing": not Path(key).is_dir()}
+        {
+            "workspace_dir": key,
+            "name": folder_name(key),
+            "missing": not Path(key).is_dir(),
+        }
         for key in REGISTRY.registered()
     ]
 
 
 async def list_workspaces(_request: Request) -> JSONResponse:
     """Return the registered projects as ``{"workspaces": [{workspace_dir,
-    missing}]}``; ``missing`` marks a project whose folder no longer exists."""
+    name, missing}]}``; ``name`` is the folder's label, which ends the names
+    of its workspace assistants (``<graph> · <name>``), and two projects can
+    share it (``workspace_dir`` tells them apart); ``missing`` marks a project
+    whose folder no longer exists."""
     projects = await asyncio.to_thread(_registered_projects)
     return JSONResponse({"workspaces": projects})
 
