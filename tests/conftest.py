@@ -248,6 +248,7 @@ def _fresh_langgraph_dev_state(monkeypatch):
         "SERVER_UNAVAILABLE": False,
         "CONFIG_DRIFT_SINCE_LAUNCH": False,
         "AGENT_SHELL_DRIFT": None,
+        "SERVER_EXPOSURE": None,
         "_ASYNC_SUBAGENTS_AVAILABLE": False,
         "_LOG_OFFSET_AT_START": 0,
     }.items():
@@ -404,7 +405,9 @@ def _no_registration(monkeypatch):
     registration itself imports ``register_folder`` at module level."""
     from EvoScientist.langgraph_dev import registration
 
-    monkeypatch.setattr(registration, "register_folder", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        registration, "register_folder", lambda *_a, **_k: registration.ServerExposure()
+    )
 
 
 @pytest.fixture(autouse=True)

@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
 from ..paths import Workspace
+from .boundary import is_loopback_host
 
 # Seconds a registration may take: the first one restores the project's
 # threads, which reads every checkpoint in sessions.db.
@@ -227,9 +229,65 @@ def reconcile_autoskills(*, url: str) -> list[str]:
     return [str(reason) for reason in failed]
 
 
-def register_folder(workspace: Workspace, *, url: str) -> None:
+_EXPOSED = (
+    "has no auth: anyone who reaches it can read every project it serves and "
+    "run the agent, with shell access, in any of them."
+)
+
+
+@dataclass(frozen=True)
+class ServerExposure:
+    """How a server can be reached from other machines: the address it
+    listens on when that is not loopback, and whether it has a public
+    tunnel."""
+
+    public_host: str | None = None
+    tunnel: bool = False
+
+    @classmethod
+    def of(cls, host: object, tunnel: object) -> ServerExposure:
+        """The exposure of a server bound to *host*; anything but a loopback
+        address counts as public, an empty one (every interface) too."""
+        if not isinstance(host, str) or is_loopback_host(host):
+            return cls(None, tunnel is True)
+        return cls(host.strip() or "every interface", tunnel is True)
+
+
+def exposure_warnings(exposure: ServerExposure | None) -> list[tuple[str, str]]:
+    """The warnings for a server with *exposure* (``None``: not known to be
+    exposed), as ``(label, message)``: one wording for every surface."""
+    if exposure is None:
+        return []
+    warnings = []
+    if exposure.public_host is not None:
+        warnings.append(
+            (
+                "PUBLIC BIND",
+                f"The agent server listens on {exposure.public_host} and "
+                f"{_EXPOSED} Trusted networks only.",
+            )
+        )
+    if exposure.tunnel:
+        warnings.append(
+            (
+                "PUBLIC TUNNEL",
+                "The agent server is reachable through a public tunnel and "
+                f"{_EXPOSED} Share its URL only with people you trust.",
+            )
+        )
+    return warnings
+
+
+def exposure_messages(exposure: ServerExposure | None) -> list[str]:
+    """The messages of :func:`exposure_warnings`, for a surface without
+    labels (a list of warnings, a log)."""
+    return [message for _, message in exposure_warnings(exposure)]
+
+
+def register_folder(workspace: Workspace, *, url: str) -> ServerExposure:
     """Register *workspace* (a project root, never a run folder) with the
-    langgraph dev server at *url*.
+    langgraph dev server at *url*; how that server, which now serves it, can
+    be reached from other machines.
 
     The local secret goes only to a server that shows it holds the same one
     (its ``instance``): another user's server on the port never gets it.
@@ -246,13 +304,15 @@ def register_folder(workspace: Workspace, *, url: str) -> None:
         {"workspace_dir": workspace.key},
         what=f"register {workspace.root} with",
     )
-    if response.status_code == 200:
-        return
     try:
         body = response.json()
     except ValueError:
+        body = None
+    if not isinstance(body, dict):
         body = {}
-    error = body.get("error") if isinstance(body, dict) else None
+    if response.status_code == 200:
+        return ServerExposure.of(body.get("host"), body.get("tunnel"))
+    error = body.get("error")
     if error == "folder_missing":
         if not workspace.root.is_dir() and is_known_project(workspace):
             raise ProjectFolderMissingError(workspace.root)
@@ -261,7 +321,7 @@ def register_folder(workspace: Workspace, *, url: str) -> None:
         )
     if error == "local_secret_required":
         raise RegistrationError(_other_server(url))
-    detail = body.get("detail") if isinstance(body, dict) else None
+    detail = body.get("detail")
     reason = ": ".join(str(part) for part in (error, detail) if part)
     raise RegistrationError(
         f"The EvoScientist server at {url} did not register {workspace.root} "

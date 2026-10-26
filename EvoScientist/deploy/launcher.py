@@ -38,7 +38,10 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from ..langgraph_dev.registration import ServerExposure
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +88,9 @@ class LaunchResult:
     warnings: list[str] = field(default_factory=list)
     # True when wait_ready() opened a browser (False on a host without one).
     browser_opened: bool = False
+    # How the backend can be reached from other machines, as it answered the
+    # registration.
+    exposure: ServerExposure | None = None
 
 
 class LauncherError(Exception):
@@ -395,6 +401,7 @@ class WebUILauncher:
         # stop() from another.
         self._lock = threading.Lock()
         self._warnings: list[str] = []
+        self._exposure: ServerExposure | None = None
 
     # -- properties ------------------------------------------------------- #
     @property
@@ -471,7 +478,9 @@ class WebUILauncher:
     def _register(self) -> None:
         """Register the workspace with the backend this launch started or
         reuses."""
-        register_launch_folder(self._cfg.workspace_dir, url=self.backend_url)
+        self._exposure = register_launch_folder(
+            self._cfg.workspace_dir, url=self.backend_url
+        )
 
     def _raise_if_stopped(self) -> None:
         """Abort startup if ``stop()`` fired on another thread mid-boot."""
@@ -705,6 +714,7 @@ class WebUILauncher:
             webui_url=self.webui_url,
             backend_started=self._backend_started,
             warnings=list(self._warnings),
+            exposure=self._exposure,
         )
 
 
@@ -717,7 +727,8 @@ def _record_serves_host(recorded: object, host: str) -> bool:
     them. A record without a host, written by an older release, is not
     checked.
     """
-    from ..langgraph_dev.manager import _WILDCARD_HOSTS, _is_loopback_host, _probe_host
+    from ..langgraph_dev.boundary import is_loopback_host
+    from ..langgraph_dev.manager import _WILDCARD_HOSTS, _probe_host
 
     if not isinstance(recorded, str):
         return True
@@ -728,7 +739,7 @@ def _record_serves_host(recorded: object, host: str) -> bool:
     if recorded in _WILDCARD_HOSTS:
         return True
     if "localhost" in (recorded, host):
-        return _is_loopback_host(recorded) and _is_loopback_host(_probe_host(host))
+        return is_loopback_host(recorded) and is_loopback_host(_probe_host(host))
     return _probe_host(recorded) == _probe_host(host)
 
 
@@ -975,15 +986,16 @@ def prepare_launch_folder(ws: str) -> None:
         raise _launcher_error(exc, ws) from exc
 
 
-def register_launch_folder(ws: str, *, url: str) -> None:
-    """Register *ws* with the backend at *url*; a failure raised as its
+def register_launch_folder(ws: str, *, url: str) -> ServerExposure:
+    """Register *ws* with the backend at *url*; how that backend can be
+    reached from other machines. A failure is raised as its
     :class:`LauncherError` (``folder_missing``, ``server_outdated`` or
     ``registration_failed``)."""
     from ..langgraph_dev import registration
     from ..paths import Workspace
 
     try:
-        registration.register_folder(Workspace(ws), url=url)
+        return registration.register_folder(Workspace(ws), url=url)
     except (registration.ServerUnusableError, registration.RegistrationError) as exc:
         raise _launcher_error(exc, ws) from exc
 

@@ -71,6 +71,27 @@ def test_ensure_dev_server_spawns_on_server_backend(monkeypatch, tmp_path):
     assert ensure_calls[0]["backend"] == "langgraph_server"
 
 
+def test_ensure_dev_server_logs_server_exposure(monkeypatch, tmp_path, caplog):
+    import EvoScientist.langgraph_dev.manager as manager_mod
+    from EvoScientist.langgraph_dev.registration import (
+        ServerExposure,
+        exposure_messages,
+    )
+
+    config, _calls = _patch_manager(
+        monkeypatch, gateway_backend="langgraph_server", default_workdir=str(tmp_path)
+    )
+    exposure = ServerExposure.of("0.0.0.0", False)
+    monkeypatch.setattr(manager_mod, "SERVER_EXPOSURE", exposure)
+
+    with caplog.at_level("WARNING"):
+        standalone._ensure_standalone_dev_server(
+            config, workspace_dir=str(tmp_path), backend="langgraph_server"
+        )
+
+    assert set(exposure_messages(exposure)) <= set(caplog.messages)
+
+
 def test_ensure_dev_server_unusable_server_exits(monkeypatch, tmp_path):
     import EvoScientist.langgraph_dev.manager as manager_mod
     from EvoScientist.langgraph_dev.registration import OlderServerError

@@ -22,6 +22,7 @@ import typer
 from EvoScientist import paths
 from EvoScientist.deploy import json_mode
 from EvoScientist.deploy import server as deploy_server
+from EvoScientist.langgraph_dev import registration
 from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
 from EvoScientist.paths import Workspace
 
@@ -76,6 +77,8 @@ class Harness:
         self.sidecar: dict[str, Any] | None = None
         self.pid_serves = True
         self.tunnel_url: str | None = None
+        # What a reused backend answers the registration.
+        self.exposure = registration.ServerExposure()
         self.job: Any = None
         # "eof": a pipe closed right after ``ready``; "eof-now": already
         # closed; "devnull"; or a file object.
@@ -99,6 +102,7 @@ class Harness:
         monkeypatch.setattr(lgm, "start_langgraph_dev", self._start)
         monkeypatch.setattr(lgm, "stop_langgraph_dev", self._stop)
         monkeypatch.setattr(lgm, "read_tunnel_url", lambda *a, **k: self.tunnel_url)
+        monkeypatch.setattr(registration, "register_folder", self._register)
         monkeypatch.setattr(lgm, "_PROCESS", None)
         # The pid file, sidecar, log and start lock under tmp_path.
         monkeypatch.setattr(
@@ -146,6 +150,14 @@ class Harness:
 
     def _stop(self, proc=None):
         self.log.append(("backend stop", proc))
+
+    def _register(self, _workspace, *, url):
+        """The backend's answer: one this run started reports its options."""
+        if self.started is None:
+            return self.exposure
+        return registration.ServerExposure.of(
+            self.started["host"], self.started.get("tunnel")
+        )
 
     # -- running ---------------------------------------------------------- #
     def close_stdin(self) -> None:
@@ -342,9 +354,10 @@ def test_tunnel_without_url_reports_null(h, capsys):
 @pytest.mark.parametrize("exposed", ["0.0.0.0", "192.168.1.5"])
 def test_public_bind_warns_in_ready(h, capsys, exposed):
     _, lines = h.run(capsys, host=exposed)
-    assert any(
-        f"Listening on {exposed}" in w for w in _by_event(lines, "ready")["warnings"]
+    expected = registration.exposure_messages(
+        registration.ServerExposure.of(exposed, False)
     )
+    assert set(expected) <= set(_by_event(lines, "ready")["warnings"])
 
 
 def test_dangerous_mode_and_tunnel_warn_in_ready(h, capsys):
@@ -352,7 +365,8 @@ def test_dangerous_mode_and_tunnel_warn_in_ready(h, capsys):
     _, lines = h.run(capsys, tunnel=True)
     warnings = _by_event(lines, "ready")["warnings"]
     assert any("DANGEROUS MODE" in w for w in warnings)
-    assert any("Public tunnel" in w for w in warnings)
+    tunnel = registration.ServerExposure.of("127.0.0.1", True)
+    assert set(registration.exposure_messages(tunnel)) <= set(warnings)
 
 
 def test_anthropic_oauth_starts_and_stops_ccproxy(h, capsys):
@@ -497,21 +511,31 @@ def test_attached_legacy_stripped_backend_gets_the_drift_warning(h, capsys):
 
 
 @pytest.mark.parametrize(
-    ("recorded", "requested", "warns"),
+    ("answered", "requested", "warns"),
     [
         ("0.0.0.0", "127.0.0.1", True),  # the backend is public, the request not
         ("127.0.0.1", "0.0.0.0", False),  # the request is public, the backend not
-        (None, "0.0.0.0", False),  # an older record: no bind to report
     ],
 )
-def test_attached_public_bind_warning_follows_the_backend(
-    h, capsys, recorded, requested, warns
+def test_attached_public_bind_warning_follows_backend(
+    h, capsys, answered, requested, warns
 ):
-    record = {} if recorded is None else {"host": recorded}
-    _attach(h, **record)
+    """The backend says how it is bound when it registers the workspace."""
+    _attach(h)
+    h.exposure = registration.ServerExposure.of(answered, False)
     _, lines = h.run(capsys, host=requested)
-    warnings = _by_event(lines, "ready")["warnings"]
-    assert any(w.startswith("Listening on") for w in warnings) is warns
+    (bind,) = registration.exposure_messages(
+        registration.ServerExposure.of("0.0.0.0", False)
+    )
+    assert (bind in _by_event(lines, "ready")["warnings"]) is warns
+
+
+def test_attached_tunneled_backend_warns(h, capsys):
+    _attach(h)
+    h.exposure = registration.ServerExposure.of("127.0.0.1", True)
+    _, lines = h.run(capsys)
+    expected = registration.exposure_messages(h.exposure)
+    assert set(expected) <= set(_by_event(lines, "ready")["warnings"])
 
 
 def test_attached_tunnel_warns_and_reports_null(h, capsys):

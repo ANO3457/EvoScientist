@@ -88,11 +88,11 @@ def run_webui(config: Any, workspace_dir: str | None = None) -> None:
     tears down both subprocesses. Never returns a value.
     """
     from ..config import apply_config_to_env
+    from ..langgraph_dev.boundary import is_loopback_host
     from ..langgraph_dev.manager import (
         RUNTIME,
         _base_url,
         _format_hostport,
-        _is_loopback_host,
     )
 
     apply_config_to_env(config)
@@ -204,13 +204,17 @@ def run_webui(config: Any, workspace_dir: str | None = None) -> None:
     # The UI reaches the backend from the BROWSER; when only the front-end is
     # exposed, remote pages load but every request fails — say so.
     remote_backend_hint = ""
-    if not _is_loopback_host(cfg.webui_host) and _is_loopback_host(cfg.backend_host):
+    backend_public = (
+        result.exposure is not None and result.exposure.public_host is not None
+    )
+    if not is_loopback_host(cfg.webui_host) and not backend_public:
         remote_backend_hint = (
             f"\n[yellow]Note:[/yellow] the UI connects to the backend from the "
             f"browser. Remote visitors cannot reach a loopback backend — run "
-            f"[bold]EvoSci config set langgraph_dev_host 0.0.0.0[/bold] and "
-            f"point the UI at [bold]http://<this-machine-ip>:{cfg.backend_port}"
-            f"[/bold].\n"
+            f"[bold]EvoSci config set langgraph_dev_host 0.0.0.0[/bold] (and "
+            f"[bold]EvoSci server stop[/bold] if a server already runs on "
+            f"loopback), then point the UI at "
+            f"[bold]http://<this-machine-ip>:{cfg.backend_port}[/bold].\n"
         )
     from ..langgraph_dev.assistants import chat_assistant_id
     from ..paths import Workspace
@@ -234,13 +238,12 @@ def run_webui(config: Any, workspace_dir: str | None = None) -> None:
             border_style="green",
         )
     )
-    if not _is_loopback_host(cfg.backend_host):
-        console.print(
-            "[bold white on red] ⚠ PUBLIC BIND [/bold white on red] "
-            f"[bold red]Backend listening on {cfg.backend_host} — no auth, and "
-            f"the agent can run shell. Trusted networks only.[/bold red]"
-        )
-    if not _is_loopback_host(cfg.webui_host):
+    from ..cli.commands import print_exposure_warnings
+
+    # The backend as it answered the registration: it may be one another
+    # session started.
+    print_exposure_warnings(result.exposure, to=console)
+    if not is_loopback_host(cfg.webui_host):
         console.print(
             "[bold white on red] ⚠ PUBLIC BIND [/bold white on red] "
             f"[bold red]WebUI listening on {cfg.webui_host} — its API reads, "

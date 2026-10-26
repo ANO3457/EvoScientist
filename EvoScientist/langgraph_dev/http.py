@@ -40,7 +40,12 @@ from starlette.routing import Route
 
 from EvoScientist.config import get_effective_config
 from EvoScientist.langgraph_dev import server_home, workspace_setup
-from EvoScientist.langgraph_dev.boundary import BOUNDARY_ENV, BrowserBoundary, Trust
+from EvoScientist.langgraph_dev.boundary import (
+    BOUNDARY_ENV,
+    BrowserBoundary,
+    Trust,
+    tunnel_host,
+)
 from EvoScientist.llm.models import list_model_picker_entries
 from EvoScientist.local_secret import (
     instance_id,
@@ -326,7 +331,10 @@ async def register_workspace(request: Request) -> JSONResponse:
 
     Answers once its setup is done (see
     :func:`~EvoScientist.langgraph_dev.workspace_setup.register_workspace`),
-    with ``{"workspace_dir": <key>}``. A folder that does not exist is
+    with ``{"workspace_dir": <key>, "host": <bind address>, "tunnel":
+    <bool>}`` (whether it has a public tunnel): the client warns when the
+    server, which serves every project, can be reached from other machines.
+    A folder that does not exist is
     refused, and never created; a setup that fails answers ``500`` (a project
     that was not registered stays unregistered). Needs the local secret.
     """
@@ -343,6 +351,12 @@ async def register_workspace(request: Request) -> JSONResponse:
     workspace = await asyncio.to_thread(read_workspace_or_none, value)
     if workspace is None:
         return JSONResponse({"error": "invalid_path"}, status_code=400)
+    # How the server can be reached from other machines, read before the
+    # setup so nothing fails once the project is registered: the bind address
+    # the manager resolved into its configuration, and the tunnel its
+    # boundary lets requests through.
+    cfg = await asyncio.to_thread(get_effective_config)
+    exposure = {"host": cfg.langgraph_dev_host, "tunnel": tunnel_host() is not None}
     try:
         async with workspace_setup.registration_lock():
             await workspace_setup.register_workspace(SessionDirs(workspace))
@@ -353,7 +367,7 @@ async def register_workspace(request: Request) -> JSONResponse:
         return JSONResponse(
             {"error": "setup_failed", "detail": str(exc)}, status_code=500
         )
-    return JSONResponse({"workspace_dir": workspace.key})
+    return JSONResponse({"workspace_dir": workspace.key} | exposure)
 
 
 async def reconcile_autoskills(request: Request) -> JSONResponse:

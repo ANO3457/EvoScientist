@@ -397,6 +397,13 @@ def test_public_bind_warning_when_backend_exposed(monkeypatch):
     """Users who widen the backend get told every time it is reachable
     off-box — an unauthenticated, shell-capable API deserves a standing
     reminder, not a one-time opt-in prompt."""
+    from EvoScientist.langgraph_dev import registration
+
+    monkeypatch.setattr(
+        registration,
+        "register_folder",
+        lambda *_a, **_k: registration.ServerExposure.of("0.0.0.0", False),
+    )
     config = _make_config(langgraph_dev_host="0.0.0.0")
     captured = _run_webui_once(monkeypatch, config)
 
@@ -420,7 +427,6 @@ def test_public_bind_warning_when_frontend_exposed(monkeypatch):
 
     banner = "\n".join(captured["printed"])
     assert "WebUI listening on 0.0.0.0" in banner
-    assert "Backend listening" not in banner
 
 
 def test_remote_backend_hint_when_frontend_exposed_but_backend_is_not(monkeypatch):
@@ -435,8 +441,17 @@ def test_remote_backend_hint_when_frontend_exposed_but_backend_is_not(monkeypatc
     assert "langgraph_dev_host" in banner
 
 
-def test_no_remote_hint_when_both_exposed(monkeypatch):
-    config = _make_config(webui_host="0.0.0.0", langgraph_dev_host="0.0.0.0")
+def test_no_remote_hint_when_backend_answers_public(monkeypatch):
+    """A reused backend another session bound to the network: the session's
+    own host setting says nothing about it."""
+    from EvoScientist.langgraph_dev import registration
+
+    monkeypatch.setattr(
+        registration,
+        "register_folder",
+        lambda *_a, **_k: registration.ServerExposure.of("0.0.0.0", False),
+    )
+    config = _make_config(webui_host="0.0.0.0", langgraph_dev_host="127.0.0.1")
     captured = _run_webui_once(monkeypatch, config)
 
     banner = "\n".join(captured["printed"])

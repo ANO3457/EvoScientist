@@ -117,7 +117,7 @@ def start_background(workdir: str | None, *, with_ccproxy: bool) -> None:
             "with [bold]EvoSci ccproxy start[/bold] (or use [bold]EvoSci service "
             "start[/bold]).[/yellow]"
         )
-    _print_server_notices(config)
+    _print_server_notices()
 
 
 @server_app.command("status")

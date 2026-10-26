@@ -146,6 +146,27 @@ def test_register_folder_sends_project_root_and_secret(monkeypatch, secret, tmp_
 
 
 @pytest.mark.parametrize(
+    ("body", "public", "tunnel"),
+    [
+        ({"host": "0.0.0.0", "tunnel": True}, True, True),
+        ({"host": " localhost ", "tunnel": False}, False, False),
+        ({"host": None, "tunnel": "yes"}, False, False),
+        # An empty bind address listens on every interface.
+        ({"host": " ", "tunnel": False}, True, False),
+        ({}, False, False),
+    ],
+)
+def test_register_folder_returns_server_exposure(
+    monkeypatch, secret, tmp_path, body, public, tunnel
+):
+    _answer(monkeypatch, 200, {"workspace_dir": "x"} | body)
+
+    answered = real_register(Workspace(tmp_path), url=URL)
+
+    assert (answered.public_host is not None, answered.tunnel) == (public, tunnel)
+
+
+@pytest.mark.parametrize(
     ("status", "body", "error", "match"),
     [
         (400, {"error": "folder_missing"}, RegistrationError, "cannot see"),
@@ -474,6 +495,39 @@ async def test_session_move_reports_folder_it_cannot_create(monkeypatch, tmp_pat
             target=SessionDirs(Workspace(tmp_path / "other")),
             current=SessionDirs(Workspace(tmp_path)),
         )
+
+
+def test_ensure_settles_registered_server_exposure(
+    monkeypatch, reused_server, tmp_path
+):
+    from EvoScientist.langgraph_dev import manager
+
+    exposure = registration.ServerExposure.of("0.0.0.0", True)
+    monkeypatch.setattr(
+        registration, "register_folder", lambda _workspace, *, url: exposure
+    )
+
+    manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
+    assert manager.SERVER_EXPOSURE == exposure
+
+    def fail(_workspace, *, url):
+        raise RegistrationError("setup failed")
+
+    monkeypatch.setattr(registration, "register_folder", fail)
+    manager.ensure_langgraph_dev(reused_server, workspace_dir=tmp_path)
+    assert manager.SERVER_EXPOSURE is None
+
+
+def test_tui_notices_name_exposed_server(monkeypatch):
+    """The terminal, where the CLI prints it, is hidden while the TUI runs."""
+    from EvoScientist.cli.tui_interactive import _agent_shell_notices
+    from EvoScientist.langgraph_dev import manager
+
+    exposure = registration.ServerExposure.of("0.0.0.0", True)
+    monkeypatch.setattr(manager, "SERVER_EXPOSURE", exposure)
+    expected = registration.exposure_messages(exposure)
+    assert len(expected) == 2
+    assert set(expected) <= set(_agent_shell_notices())
 
 
 def test_tui_notices_name_unavailable_server(monkeypatch):

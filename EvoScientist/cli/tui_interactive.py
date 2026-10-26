@@ -118,20 +118,23 @@ def _shorten_path(path: str) -> str:
 
 
 def _agent_shell_notices() -> list[str]:
-    """The agent shell's setup hint, the server drift warning and a server
-    unavailable for this project, when they apply.
+    """The agent shell's setup hint, the server drift warning, a server
+    unavailable for this project and one reachable from other machines, when
+    they apply.
 
     They also go to the terminal or the log, which Textual hides while the
     app runs, so the TUI shows them as notifications.
     """
     from ..agent_shell import setup_hint
     from ..langgraph_dev import manager as lg_manager
+    from ..langgraph_dev.registration import exposure_messages
 
     unavailable = (
         lg_manager.SERVER_UNAVAILABLE_MESSAGE if lg_manager.SERVER_UNAVAILABLE else None
     )
     notices = [setup_hint(), lg_manager.AGENT_SHELL_DRIFT, unavailable]
-    return [n for n in notices if n is not None]
+    exposure = exposure_messages(lg_manager.SERVER_EXPOSURE)
+    return [n for n in notices if n is not None] + exposure
 
 
 async def _auto_start_channel_in_worker(

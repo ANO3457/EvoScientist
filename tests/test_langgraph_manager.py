@@ -17,6 +17,7 @@ import pytest
 
 from EvoScientist.config.settings import EvoScientistConfig
 from EvoScientist.langgraph_dev import manager
+from EvoScientist.langgraph_dev.boundary import is_loopback_host
 
 
 @pytest.fixture(autouse=True)
@@ -59,13 +60,17 @@ class TestIsLoopbackHost:
     """Drives the public-bind warning, so it must be conservative: only
     provable loopback suppresses the banner."""
 
-    @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost", "  LOCALHOST  "])
+    @pytest.mark.parametrize(
+        "host", ["127.0.0.1", "::1", "[::1]", "localhost", "  LOCALHOST  "]
+    )
     def test_loopback_recognized(self, host):
-        assert manager._is_loopback_host(host) is True
+        assert is_loopback_host(host) is True
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.5", "example.test"])
+    @pytest.mark.parametrize(
+        "host", ["0.0.0.0", "::", "192.168.1.5", "example.test", "[::1", "::1]"]
+    )
     def test_exposed_hosts_rejected(self, host):
-        assert manager._is_loopback_host(host) is False
+        assert is_loopback_host(host) is False
 
 
 class TestBaseUrl:

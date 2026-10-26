@@ -164,6 +164,10 @@ AGENT_SHELL_DRIFT: str | None = None
 # have it (it did not start, or did not register the project). The TUI shows
 # :data:`SERVER_UNAVAILABLE_MESSAGE` in the app, where the terminal is hidden.
 SERVER_UNAVAILABLE = False
+# Set by ``ensure_langgraph_dev``: how the server that registered the
+# session's project can be reached from other machines, as it answered;
+# ``None`` when no server registered it.
+SERVER_EXPOSURE: registration.ServerExposure | None = None
 SERVER_UNAVAILABLE_MESSAGE = (
     "The background agent server is unavailable for this project; async "
     "subagents and EvoMemory workers are off for this session."
@@ -197,15 +201,6 @@ def _probe_host(host: str = _DEFAULT_HOST) -> str:
     specific interface is returned as-is — loopback would not reach it.
     """
     return "127.0.0.1" if host in _WILDCARD_HOSTS else host
-
-
-def _is_loopback_host(host: str) -> bool:
-    """Return True if binding ``host`` keeps the server unreachable off-box.
-
-    Drives the PUBLIC BIND warning, so it is conservative: anything not
-    provably loopback counts as exposed.
-    """
-    return host.strip().lower() in {"127.0.0.1", "::1", "localhost"}
 
 
 def _format_hostport(host: str, port: int) -> str:
@@ -289,8 +284,8 @@ def _write_workspace_sidecar(
     same way. ``data_dir`` and ``config_dir`` are this process's data and
     config folders, which the server inherits (``paths.dir_env``), so a
     client attaching from another environment reads the server's own.
-    ``host`` is the interface the server binds, so such a client can tell
-    whether the server is reachable from other machines. ``lasting`` says
+    ``host`` is the interface the server binds, so a client can tell
+    whether its probe reaches this server. ``lasting`` says
     whether it outlives the process that started it.
 
     Atomic write via temp-file + ``os.replace``: without this, a concurrent
@@ -928,8 +923,9 @@ def start_langgraph_dev(
             ``Path.cwd()``.
         port: TCP port to bind. Defaults to 6174 (Kaprekar's constant).
         host: Network interface to bind. Defaults to loopback. SECURITY:
-            widening this exposes an unauthenticated API whose agent can run
-            shell commands — only pass ``0.0.0.0`` on trusted networks.
+            widening this exposes an unauthenticated API that serves every
+            registered project and whose agent can run shell commands — only
+            pass ``0.0.0.0`` on trusted networks.
         file_persistence: When True (default), langgraph dev writes its full
             ``.langgraph_api/`` cache in the server home so async-task / Store
             / scheduler state survives subprocess restarts. Set False to
@@ -938,8 +934,9 @@ def start_langgraph_dev(
         tunnel: When True, pass ``--tunnel`` so langgraph dev exposes the
             server over a public Cloudflare quick-tunnel. The random
             ``*.trycloudflare.com`` URL is written to the log; read it back
-            with :func:`read_tunnel_url`. SECURITY: the tunnel has no auth and
-            the deployed agent can run shell — only enable for trusted use.
+            with :func:`read_tunnel_url`. SECURITY: the tunnel has no auth,
+            exposes every registered project and the agent can run shell —
+            only enable for trusted use.
         job: A Windows job object the server joins before it runs (started
             suspended, then resumed), so it ends with the caller's process.
         lasting: Whether the server outlives its caller, shared by every
@@ -1381,12 +1378,18 @@ def ensure_langgraph_dev(
             whether the server is needed at all.
     """
 
-    def settle(found: _Found, *, needed: bool = True) -> bool:
+    def settle(
+        found: _Found,
+        *,
+        needed: bool = True,
+        exposure: registration.ServerExposure | None = None,
+    ) -> bool:
         global _ASYNC_SUBAGENTS_AVAILABLE, CONFIG_DRIFT_SINCE_LAUNCH
-        global AGENT_SHELL_DRIFT, SERVER_UNAVAILABLE
+        global AGENT_SHELL_DRIFT, SERVER_UNAVAILABLE, SERVER_EXPOSURE
         _ASYNC_SUBAGENTS_AVAILABLE = found.available
         CONFIG_DRIFT_SINCE_LAUNCH, AGENT_SHELL_DRIFT = found.drift, found.shell_drift
         SERVER_UNAVAILABLE = needed and not found.available
+        SERVER_EXPOSURE = exposure
         return not SERVER_UNAVAILABLE
 
     if not needs_langgraph_dev(config, backend=backend):
@@ -1438,7 +1441,9 @@ def ensure_langgraph_dev(
 
     workspace = paths.Workspace(workspace_dir)
     try:
-        registration.register_folder(workspace, url=langgraph_dev_url(config))
+        exposure = registration.register_folder(
+            workspace, url=langgraph_dev_url(config)
+        )
     except registration.OlderServerError:
         # Unusable for any project, the session's current one included.
         settle(_Found())
@@ -1455,7 +1460,7 @@ def ensure_langgraph_dev(
     except BaseException:
         settle(_Found())
         raise
-    return settle(found)
+    return settle(found, exposure=exposure)
 
 
 def serve_project(

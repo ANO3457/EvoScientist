@@ -53,13 +53,15 @@ def deploy(
         "--host",
         help="Interface to bind (default: config.langgraph_dev_host = "
         "127.0.0.1, i.e. this machine only — pass 0.0.0.0 to reach it from "
-        "other machines, but note the server has no auth)",
+        "other machines, but note the server has no auth and serves every "
+        "project)",
     ),
     tunnel: bool = typer.Option(
         False,
         "--tunnel",
         help="Expose the server over a public Cloudflare tunnel (no auth — "
-        "anyone with the URL can drive the agent; trusted use only)",
+        "anyone with the URL can read every project the server serves and run "
+        "the agent in any of them; trusted use only)",
     ),
     debug: bool = typer.Option(
         False,
@@ -94,7 +96,6 @@ def deploy(
     from ..langgraph_dev.manager import (
         RUNTIME,
         _base_url,
-        _is_loopback_host,
         _is_port_occupied,
         _pid_serves_port,
         _read_workspace_sidecar,
@@ -217,20 +218,6 @@ def deploy(
                 f"[bold red]{DANGEROUS_BANNER_MESSAGE}[/bold red]"
             )
 
-        if not _is_loopback_host(effective_host):
-            console.print(
-                "[bold white on red] ⚠ PUBLIC BIND [/bold white on red] "
-                f"[bold red]Listening on {effective_host} — no auth, and the agent "
-                f"can run shell. Trusted networks only.[/bold red]"
-            )
-
-        if tunnel:
-            console.print(
-                "[bold white on red] ⚠ PUBLIC TUNNEL [/bold white on red] "
-                "[bold red]Public URL, no auth — share only with people you "
-                "trust.[/bold red]"
-            )
-
         # 6. ccproxy lifecycle (Anthropic OAuth only)
         _ccproxy_proc = None
         if config.anthropic_auth_mode == "oauth":
@@ -275,7 +262,9 @@ def deploy(
 
     # The server serves the projects its clients register, this one too.
     try:
-        register_folder(Workspace(ws), url=_base_url(effective_port, effective_host))
+        exposure = register_folder(
+            Workspace(ws), url=_base_url(effective_port, effective_host)
+        )
     except (ServerUnusableError, RegistrationError) as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
@@ -283,6 +272,9 @@ def deploy(
     # start_langgraph_dev already health-polled before returning; if we got
     # here, the subprocess is up.
     console.print("[green]✓[/green] langgraph dev ready")
+    from ..cli.commands import print_exposure_warnings
+
+    print_exposure_warnings(exposure, to=console)
     # The agent is built inside the server, so its own hint lands in the
     # server log; show it here.
     from ..agent_shell import setup_hint

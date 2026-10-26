@@ -830,18 +830,27 @@ def _ensure_async_subagent_server(
         console.print(
             f"[yellow]{escape(_lg_manager.SERVER_UNAVAILABLE_MESSAGE)}[/yellow]"
         )
-    _print_server_notices(config)
+    _print_server_notices()
 
 
-def _print_server_notices(config: Any) -> None:
+def print_exposure_warnings(exposure: Any, *, to: Any = None) -> None:
+    """Print the warnings for a server with *exposure* (a
+    :class:`~EvoScientist.langgraph_dev.registration.ServerExposure`, or
+    ``None``) on the console *to* (this module's by default), as every
+    terminal surface shows them."""
+    from ..langgraph_dev.registration import exposure_warnings
+
+    for label, message in exposure_warnings(exposure):
+        (to or console).print(
+            f"[bold white on red] ⚠ {label} [/bold white on red] "
+            f"[bold red]{escape(message)}[/bold red]"
+        )
+
+
+def _print_server_notices() -> None:
     """What the user should know about the server a start found or started:
-    drift since its launch, and a public bind."""
+    drift since its launch, and a public bind or tunnel."""
     from ..langgraph_dev import manager as _lg_manager
-    from ..langgraph_dev.manager import (
-        _is_loopback_host,
-        configured_address,
-        is_langgraph_dev_running,
-    )
 
     if _lg_manager.CONFIG_DRIFT_SINCE_LAUNCH:
         console.print(
@@ -853,20 +862,10 @@ def _print_server_notices(config: Any) -> None:
     if _lg_manager.AGENT_SHELL_DRIFT is not None:
         console.print(f"[yellow]⚠ {escape(_lg_manager.AGENT_SHELL_DRIFT)}[/yellow]")
 
-    # The backend is shared by every UI mode, so the exposure warning lives
-    # here, not just in deploy/WebUI. Gated on the server being up (whether
-    # or not it serves this project): warning about a bind that never
-    # happened would be worse than saying nothing.
-    port, bind_host = configured_address(config)
-    if not _is_loopback_host(bind_host) and is_langgraph_dev_running(
-        port=port, host=bind_host
-    ):
-        console.print(
-            "[bold white on red] ⚠ PUBLIC BIND [/bold white on red] "
-            f"[bold red]Agent server listening on {bind_host} — no auth, and "
-            f"the agent can run shell. Use --host 127.0.0.1 on untrusted "
-            f"networks.[/bold red]"
-        )
+    # The server serves every project, so a public bind or tunnel, whichever
+    # session started it, exposes this one too; the server said so when it
+    # registered the project.
+    print_exposure_warnings(_lg_manager.SERVER_EXPOSURE)
 
 
 def warn_server_backend_hitl_caveats(

@@ -402,8 +402,16 @@ def test_register_workspace_route_needs_secret(server, workspace):
     assert response.status_code == 403
 
 
+@pytest.mark.parametrize(
+    ("api_url", "tunnel"),
+    [
+        ("https://abc-def.trycloudflare.com", True),
+        # A tunnel that did not come up in time: the local URL.
+        ("http://0.0.0.0:6174", False),
+    ],
+)
 def test_register_workspace_route_sets_project_up(
-    server, secret, monkeypatch, workspace
+    server, secret, monkeypatch, workspace, api_url, tunnel
 ):
     registered = []
 
@@ -411,12 +419,18 @@ def test_register_workspace_route_sets_project_up(
         registered.append(dirs)
 
     monkeypatch.setattr(workspace_setup, "register_workspace", register)
+    monkeypatch.setenv("EVOSCIENTIST_LANGGRAPH_DEV_HOST", "0.0.0.0")
+    monkeypatch.setenv("LANGGRAPH_API_URL", api_url)
     response = server.post(
         "/api/workspaces", json={"workspace_dir": f"{workspace.root}/"}, headers=secret
     )
 
     assert response.status_code == 200
-    assert response.json() == {"workspace_dir": workspace.key}
+    assert response.json() == {
+        "workspace_dir": workspace.key,
+        "host": "0.0.0.0",
+        "tunnel": tunnel,
+    }
     assert registered == [SessionDirs(workspace)]
 
 

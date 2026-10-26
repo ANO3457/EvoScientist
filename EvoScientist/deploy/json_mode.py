@@ -97,6 +97,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from ..langgraph_dev.assistants import chat_assistant_id
+from ..langgraph_dev.registration import ServerExposure, exposure_messages
 from ..paths import Workspace
 from ..setup.protocol import PROTOCOL, JsonEmitter, stdin_is_pipe
 
@@ -320,17 +321,14 @@ class _Run:
         # during the start: stop now, without the tunnel wait or ready.
         if decision is None or self.stop.is_set():
             return
-        self._register(ws)
+        exposure = self._register(ws)
+        # The backend's bind and tunnel, as it answered the registration: for
+        # a reused one, --host and --tunnel here say nothing about it.
         warnings = list(decision.warnings)
+        warnings.extend(exposure_messages(exposure))
         public_url: str | None = None
         if decision.action == "reuse":
             record = decision.sidecar or {}
-            # The running backend's bind, from its record; a record written
-            # before it carried one gives no warning, since --host here says
-            # nothing about that backend.
-            bound = record.get("host")
-            if isinstance(bound, str) and not lgm._is_loopback_host(bound):
-                warnings.append(_public_bind_warning(bound))
             owned = False
             data_dir = record.get("data_dir") or str(paths.DATA_DIR)
             config_dir = record.get("config_dir") or str(paths.CONFIG_DIR)
@@ -343,8 +341,6 @@ class _Run:
         else:
             owned = True
             # The human mode's banners, for the app to show.
-            if not lgm._is_loopback_host(self.host):
-                warnings.append(_public_bind_warning(self.host))
             if getattr(config, "dangerous_mode", False):
                 from ..cli._constants import (
                     DANGEROUS_BANNER_LABEL,
@@ -352,10 +348,6 @@ class _Run:
                 )
 
                 warnings.append(f"{DANGEROUS_BANNER_LABEL}: {DANGEROUS_BANNER_MESSAGE}")
-            if tunnel:
-                warnings.append(
-                    "Public tunnel: no auth, share the URL only with people you trust."
-                )
             data_dir = str(paths.DATA_DIR)
             config_dir = str(paths.CONFIG_DIR)
             if self.job is not None and self.job.warning:
@@ -382,13 +374,14 @@ class _Run:
             fields["public_url"] = public_url
         self.events("ready", **fields)
 
-    def _register(self, ws: str) -> None:
-        """Register the workspace with the backend this command uses."""
+    def _register(self, ws: str) -> ServerExposure:
+        """Register the workspace with the backend this command uses; how
+        that backend can be reached from other machines."""
         from ..langgraph_dev import manager as lgm
         from .launcher import register_launch_folder
 
         with _launcher_failures():
-            register_launch_folder(ws, url=lgm._base_url(self.port, self.host))
+            return register_launch_folder(ws, url=lgm._base_url(self.port, self.host))
 
     def _decide_and_start(self, target: Any, config: Any, ws: str, tunnel: bool) -> Any:
         """The backend decision, and the start it calls for, under the lock
@@ -569,13 +562,6 @@ class _Run:
             finally:
                 if self.job is not None:
                     self.job.close()
-
-
-def _public_bind_warning(host: str) -> str:
-    return (
-        f"Listening on {host}: no auth, and the agent can run shell. "
-        "Trusted networks only."
-    )
 
 
 def _check_sign_in(config: Any) -> None:

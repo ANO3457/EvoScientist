@@ -274,17 +274,23 @@ def _ensure_standalone_dev_server(
     if backend != "langgraph_server":
         return
 
-    from ..langgraph_dev.manager import ensure_langgraph_dev
-    from ..langgraph_dev.registration import ServerUnusableError
+    from ..langgraph_dev import manager
+    from ..langgraph_dev.registration import ServerUnusableError, exposure_messages
     from ..paths import ensure_dirs
 
     ensure_dirs()
     logger.info("Starting background agent server (langgraph dev)...")
     try:
-        ensure_langgraph_dev(config, workspace_dir=workspace_dir, backend=backend)
+        manager.ensure_langgraph_dev(
+            config, workspace_dir=workspace_dir, backend=backend
+        )
     except ServerUnusableError as exc:
         logger.error("Cannot start server-backed standalone channel: %s", exc)
         raise SystemExit(1) from exc
+    # The server serves every project: a public bind or tunnel exposes this
+    # one too.
+    for message in exposure_messages(manager.SERVER_EXPOSURE):
+        logger.warning(message)
 
 
 def _ensure_ccproxy(config: Any) -> None:
