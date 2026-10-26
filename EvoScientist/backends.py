@@ -649,12 +649,14 @@ def _unanswered_calls(messages: list) -> list[tuple[dict, bool]] | None:
         return None
 
     def _calls(message: AIMessage) -> list[tuple[dict, bool]]:
+        # ``convert_to_messages`` leaves a dict's ``invalid_tool_calls`` in
+        # ``additional_kwargs`` (server state messages arrive as dicts).
+        invalid = message.invalid_tool_calls or message.additional_kwargs.get(
+            "invalid_tool_calls"
+        )
         return [
             *((call, False) for call in message.tool_calls),
-            *(
-                (call, True)
-                for call in (getattr(message, "invalid_tool_calls", None) or ())
-            ),
+            *((call, True) for call in invalid or ()),
         ]
 
     last_calls: list[tuple[dict, bool]] = []
