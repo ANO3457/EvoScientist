@@ -171,11 +171,10 @@ def _run_until_the_check(monkeypatch, argv):
     )
     monkeypatch.setattr(config_module, "apply_config_to_env", lambda config: None)
     monkeypatch.setattr(commands, "_require_chatgpt_sign_in", _check)
-    console_file = console.file
-    try:
-        result = CliRunner().invoke(app, argv, catch_exceptions=True)
-    finally:
-        console.file = console_file
+    # The CLI rebinds the shared console's stream; ``console.file`` would read
+    # back the stream of this test's capture and keep it for later tests.
+    monkeypatch.setattr(console, "_file", console._file)
+    result = CliRunner().invoke(app, argv, catch_exceptions=True)
     return seen, result
 
 
@@ -252,10 +251,7 @@ def test_auth_mode_flag_applies_oauth_only_to_providers_in_use(
     )
     monkeypatch.setattr(config_module, "apply_config_to_env", lambda config: None)
     monkeypatch.setattr(commands, "_require_chatgpt_sign_in", _check)
-    console_file = console.file
-    try:
-        CliRunner().invoke(app, ["--auth-mode", flag, "-p", "hi"])
-    finally:
-        console.file = console_file
+    monkeypatch.setattr(console, "_file", console._file)
+    CliRunner().invoke(app, ["--auth-mode", flag, "-p", "hi"])
 
     assert seen == [modes]
