@@ -2583,6 +2583,21 @@ def config_set(
     console.print(f"[green]Set {escape(key)}[/green]")
     if key in warnings:
         console.print(f"[yellow]Note: {escape(warnings[key])}[/yellow]")
+    from ..memory.autoskills.schedule import AUTOSKILL_SETTINGS
+
+    if key in AUTOSKILL_SETTINGS:
+        _apply_autoskills_settings()
+
+
+def _apply_autoskills_settings(config: Any = None) -> None:
+    """Have a running server reschedule every project's AutoSkills cron,
+    reached at *config*'s address (by default the current configuration's)."""
+    from ..config import get_effective_config
+    from ..langgraph_dev.registration import apply_autoskills_settings
+
+    note = apply_autoskills_settings(config or get_effective_config())
+    if note is not None:
+        console.print(f"[yellow]{escape(note)}[/yellow]")
 
 
 @config_app.command("reset")
@@ -2604,14 +2619,18 @@ def config_reset(
             console.print("[dim]Cancelled.[/dim]")
             return
 
+    from ..config import get_effective_config
     from ..config.store import ConfigError
 
+    # The server keeps the address it started on, which a reset may drop.
+    before = get_effective_config()
     try:
         reset_config()
     except ConfigError as e:
         console.print(f"[red]{escape(str(e))}[/red]")
         raise typer.Exit(1) from None
     console.print("[green]Configuration reset to defaults.[/green]")
+    _apply_autoskills_settings(before)
 
 
 @config_app.command("path")

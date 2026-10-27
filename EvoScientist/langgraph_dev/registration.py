@@ -284,6 +284,29 @@ def exposure_messages(exposure: ServerExposure | None) -> list[str]:
     return [message for _, message in exposure_warnings(exposure)]
 
 
+def apply_autoskills_settings(config: object) -> str | None:
+    """Ask the server *config* names, when it runs, to reconcile every
+    project's AutoSkills cron with the settings just saved; a note when it
+    could not. Without a running server each project follows at its next
+    setup."""
+    from .manager import is_langgraph_dev_running
+    from .sdk import langgraph_dev_url
+
+    url = langgraph_dev_url(config)
+    if not is_langgraph_dev_running(base_url=url):
+        return None
+    try:
+        failed = reconcile_autoskills(url=url)
+    except (RegistrationError, ServerUnusableError) as exc:
+        return (
+            "Could not ask the background agent server to apply it; each "
+            f"project follows when the server next sets it up: {exc}"
+        )
+    if failed:
+        return "AutoSkills was not rescheduled for: " + "; ".join(failed)
+    return None
+
+
 def register_folder(workspace: Workspace, *, url: str) -> ServerExposure:
     """Register *workspace* (a project root, never a run folder) with the
     langgraph dev server at *url*; how that server, which now serves it, can

@@ -236,7 +236,6 @@ async def _none():
 def test_autoskills_setting_asks_server_to_reconcile(monkeypatch, running):
     """The server reconciles with its own settings; without a server, each
     project follows at its next setup."""
-    from EvoScientist.commands.implementation import autoskills
     from EvoScientist.langgraph_dev import manager, registration
 
     asked = []
@@ -245,12 +244,11 @@ def test_autoskills_setting_asks_server_to_reconcile(monkeypatch, running):
         registration, "reconcile_autoskills", lambda *, url: asked.append(url) or []
     )
 
-    assert autoskills._apply_to_server(_config()) is None
+    assert registration.apply_autoskills_settings(_config()) is None
     assert asked == (["http://127.0.0.1:6174"] if running else [])
 
 
 def test_autoskills_setting_reports_failed_reconcile(monkeypatch):
-    from EvoScientist.commands.implementation import autoskills
     from EvoScientist.langgraph_dev import manager, registration
 
     def refuse(*, url):
@@ -259,7 +257,7 @@ def test_autoskills_setting_reports_failed_reconcile(monkeypatch):
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_k: True)
     monkeypatch.setattr(registration, "reconcile_autoskills", refuse)
 
-    assert "not now" in autoskills._apply_to_server(_config())
+    assert "not now" in registration.apply_autoskills_settings(_config())
 
 
 def test_reconcile_autoskills_client_posts_with_secret(monkeypatch, tmp_path):
@@ -304,7 +302,6 @@ async def test_reconcile_in_server_replaces_cron_after_timezone_change(
 
 
 def test_autoskills_setting_reports_projects_not_rescheduled(monkeypatch):
-    from EvoScientist.commands.implementation import autoskills
     from EvoScientist.langgraph_dev import manager, registration
 
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_k: True)
@@ -312,7 +309,7 @@ def test_autoskills_setting_reports_projects_not_rescheduled(monkeypatch):
         registration, "reconcile_autoskills", lambda *, url: ["/a: bad timezone"]
     )
 
-    assert "/a: bad timezone" in autoskills._apply_to_server(_config())
+    assert "/a: bad timezone" in registration.apply_autoskills_settings(_config())
 
 
 @pytest.mark.parametrize(
@@ -389,3 +386,38 @@ def test_reconcile_autoskills_client_shows_server_reason(monkeypatch, tmp_path):
 
     with pytest.raises(registration.RegistrationError, match="registry locked"):
         registration.reconcile_autoskills(url="http://127.0.0.1:6174")
+
+
+@pytest.mark.parametrize(
+    ("args", "asked"),
+    [
+        (["set", "memory_skill_synthesis_enabled", "false"], 1),
+        (["set", "scheduler_default_timezone", "Asia/Shanghai"], 1),
+        (["set", "log_level", "debug"], 0),
+        (["reset", "--yes"], 1),
+    ],
+)
+def test_config_commands_reschedule_autoskills(monkeypatch, args, asked):
+    """A running server would keep every project's cron on the old settings;
+    after a reset it is still reached on the port it started on."""
+    from typer.testing import CliRunner
+
+    from EvoScientist.cli.commands import config_app
+    from EvoScientist.config.settings import get_config_path
+    from EvoScientist.langgraph_dev import registration
+
+    get_config_path().parent.mkdir(parents=True, exist_ok=True)
+    get_config_path().write_text(
+        "log_level: info\nlanggraph_dev_port: 16123\n", encoding="utf-8"
+    )
+    ports = []
+    monkeypatch.setattr(
+        registration,
+        "apply_autoskills_settings",
+        lambda config: ports.append(config.langgraph_dev_port),
+    )
+
+    result = CliRunner().invoke(config_app, args)
+
+    assert result.exit_code == 0, result.output
+    assert ports == [16123] * asked

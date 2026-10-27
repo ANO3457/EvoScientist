@@ -327,7 +327,9 @@ class AutoSkillsCommand(Command):
             f"Updated {self._config_label(key)} = {self._display_value(getattr(cfg, key))}",
             style="green",
         )
-        note = await asyncio.to_thread(_apply_to_server, cfg)
+        from ...langgraph_dev.registration import apply_autoskills_settings
+
+        note = await asyncio.to_thread(apply_autoskills_settings, cfg)
         if note is not None:
             ctx.ui.append_system(note, style="yellow")
 
@@ -432,30 +434,3 @@ class AutoSkillsCommand(Command):
 
 
 manager.register(AutoSkillsCommand())
-
-
-def _apply_to_server(config: object) -> str | None:
-    """Ask the background agent server to reconcile every project's
-    AutoSkills cron with the new setting; a note when it could not."""
-    from ...langgraph_dev.manager import is_langgraph_dev_running
-    from ...langgraph_dev.registration import (
-        RegistrationError,
-        ServerUnusableError,
-        reconcile_autoskills,
-    )
-    from ...langgraph_dev.sdk import langgraph_dev_url
-
-    url = langgraph_dev_url(config)
-    if not is_langgraph_dev_running(base_url=url):
-        # The server applies it to each project as it sets it up.
-        return None
-    try:
-        failed = reconcile_autoskills(url=url)
-    except (RegistrationError, ServerUnusableError) as exc:
-        return (
-            "Could not ask the background agent server to apply it; each "
-            f"project follows when the server next sets it up: {exc}"
-        )
-    if failed:
-        return "AutoSkills was not rescheduled for: " + "; ".join(failed)
-    return None
