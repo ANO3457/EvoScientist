@@ -433,7 +433,9 @@ export TAVILY_API_KEY="tvly-..."    # app.tavily.com
 
 Or use `EvoSci config set` to persist keys in `~/.config/evoscientist/config.yaml`.
 
-Every agent takes its keys from `config.yaml` or the environment. A project `.env` holds only settings of the `EvoSci` command started in that folder, such as `EVOSCIENTIST_DEFAULT_MODE` or `EVOSCIENTIST_UI_BACKEND`; `EvoSci` warns about, and ignores, any key or other setting EvoScientist reads in it. Other variables in it, such as `HF_TOKEN`, are ignored too: export them in your shell before starting EvoSci (the background server keeps the environment it started with).
+Every agent takes its keys from `config.yaml` or the environment. A project `.env` holds only settings of the `EvoSci` command started in that folder, such as `EVOSCIENTIST_DEFAULT_MODE` or `EVOSCIENTIST_UI_BACKEND`; `EvoSci` warns about, and ignores, any key or other setting EvoScientist reads in it. Other variables in it, such as `HF_TOKEN`, are ignored too: export them in your shell before starting EvoSci.
+
+The background server keeps the environment of the session that started it, for every project, until it is stopped: one project's exports (a conda environment, direnv, a per-project `AWS_PROFILE`) reach the agent's shell and `${VAR}` in `mcp.yaml` in every other project, and exports made later never reach it. Start it with `EvoSci service start` from a shell that has what every project needs, and after changing that, run `EvoSci service stop` and start it again.
 
 </details>
 
