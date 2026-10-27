@@ -92,8 +92,9 @@ def test_session_flag_reaches_only_server_it_owns(
     monkeypatch, tmp_path, runtime_paths, lasting, passed
 ):
     """A lasting server serves later sessions and every project: this
-    session's --dangerous (or --debug, --auth-mode) does not reach it. A
-    server EvoSci deploy or the desktop app owns gets its starter's flags."""
+    session's --dangerous (or --debug) does not reach it; the auth mode does
+    (test_auth_mode_flag_reaches_lasting_server). A server EvoSci deploy or
+    the desktop app owns gets its starter's flags."""
     from EvoScientist.config import settings
 
     monkeypatch.setenv("EVOSCIENTIST_DANGEROUS_MODE", "true")

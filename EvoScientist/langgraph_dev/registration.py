@@ -3,8 +3,8 @@ runs first (:func:`prepare_workdir`), and the registration of its project
 with the langgraph dev server it uses (:func:`register_folder`).
 
 The server serves a project once it is registered and while its folder
-exists. Registering an already registered project is cheap, so a client
-registers its project every time it starts or reuses a server.
+exists. A client registers its project every time it starts or reuses a
+server; each registration restores the project's threads.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ import httpx
 from ..paths import Workspace
 from .boundary import is_loopback_host
 
-# Seconds a registration may take: the first one restores the project's
-# threads, which reads every checkpoint in sessions.db.
+# Seconds a registration may take: it restores the project's threads, which
+# reads every checkpoint in sessions.db.
 REGISTRATION_TIMEOUT = 120.0
 # Seconds the read of the server's instance may take.
 INSTANCE_TIMEOUT = 10.0
