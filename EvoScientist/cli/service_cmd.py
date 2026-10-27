@@ -32,11 +32,15 @@ def service_start(
 
 
 @service_app.command("stop")
-def service_stop() -> None:
+def service_stop(
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Stop it even while the server runs work"
+    ),
+) -> None:
     """Stop the background agent service: the server and ccproxy. A server
     that EvoSci deploy or the desktop app owns is left running, with the
-    ccproxy it may route through."""
-    if stop_server(keep_owned=True):
+    ccproxy it may route through, and a busy one is stopped after asking."""
+    if stop_server(keep_owned=True, yes=yes):
         from ..ccproxy_manager import recorded_ccproxy_running
 
         if recorded_ccproxy_running() is not None:

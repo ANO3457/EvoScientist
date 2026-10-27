@@ -171,15 +171,76 @@ def server_status() -> None:
 
 
 @server_app.command("stop")
-def server_stop() -> None:
+def server_stop(
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Stop it even while it runs work"
+    ),
+) -> None:
     """Stop the background langgraph dev server started by EvoSci."""
-    stop_server()
+    stop_server(yes=yes)
 
 
-def stop_server(*, keep_owned: bool = False) -> bool:
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _busy_work(url: str) -> str | None:
+    """What the server at *url* is running that a stop would end, or None
+    when it is idle (or cannot be asked)."""
+    from ..deploy.busy import (
+        backend_has_active_runs,
+        has_busy_thread,
+        running_bg_process_names,
+    )
+
+    if not backend_has_active_runs(url):
+        return None
+    work = []
+    jobs = running_bg_process_names(url)
+    if jobs:
+        work.append(f"background jobs: {', '.join(jobs)}")
+    if has_busy_thread(url):
+        work.append("a run in progress")
+    return "; ".join(work) or "work in progress"
+
+
+def _stop_busy_server_anyway(config) -> bool:
+    """Whether to go on with a stop: always for an idle server; for a busy
+    one, after asking, since it serves every project and its runs and
+    background jobs are not kept. Without a terminal to ask in, it is refused
+    (exit 1), as ``EvoSci update`` does; ``--yes`` skips the question."""
+    from ..langgraph_dev.manager import (
+        _base_url,
+        configured_address,
+        is_langgraph_dev_running,
+    )
+
+    port, host = configured_address(config)
+    if not is_langgraph_dev_running(port=port, host=host):
+        return True
+    work = _busy_work(_base_url(port, host))
+    if work is None:
+        return True
+    message = (
+        f"The background agent server is busy ({work}). Stopping it ends that "
+        "work, for every project using the server."
+    )
+    if not _interactive():
+        console.print(
+            f"[yellow]⚠ {escape(message)} Pass --yes to stop it anyway.[/yellow]"
+        )
+        raise typer.Exit(1)
+    if typer.confirm(f"{message} Stop it?", default=False):
+        return True
+    console.print("[dim]Left running.[/dim]")
+    return False
+
+
+def stop_server(*, keep_owned: bool = False, yes: bool = False) -> bool:
     """``EvoSci server stop``; with *keep_owned* (``EvoSci service stop``), a
     server that ``EvoSci deploy`` or the desktop app owns, or that another
-    process is starting or stopping, is left running. Whether it was."""
+    process is starting or stopping, is left running. A busy server is
+    stopped only after asking, or with *yes*. Whether it was left running."""
     from ..config import get_effective_config
     from ..langgraph_dev.manager import (
         ServerKeptError,
@@ -188,6 +249,8 @@ def stop_server(*, keep_owned: bool = False) -> bool:
         stop_recorded_server,
     )
 
+    if not yes and not _stop_busy_server_anyway(get_effective_config()):
+        return True
     try:
         pid = stop_recorded_server(keep_owned=keep_owned)
     except ServerKeptError as exc:

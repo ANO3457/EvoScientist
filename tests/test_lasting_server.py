@@ -617,3 +617,63 @@ def test_ccproxy_start_failure_keeps_install_hint(monkeypatch):
 
     assert result.exit_code == 1
     assert "evoscientist[oauth]" in result.output
+
+
+@pytest.fixture
+def busy_server(monkeypatch):
+    """A running server with a background job; returns the stops made."""
+    from EvoScientist.deploy import busy
+
+    stopped: list = []
+    monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_k: True)
+    monkeypatch.setattr(busy, "backend_has_active_runs", lambda url: True)
+    monkeypatch.setattr(busy, "running_bg_process_names", lambda url: ["train.py"])
+    monkeypatch.setattr(busy, "has_busy_thread", lambda url: False)
+    monkeypatch.setattr(
+        manager,
+        "stop_recorded_server",
+        lambda **_k: stopped.append("server") or 42,
+    )
+    return stopped
+
+
+@pytest.mark.parametrize("command", [["server", "stop"], ["service", "stop"]])
+def test_stop_without_terminal_refuses_busy_server(busy_server, command):
+    """It serves every project; a script must say --yes to end its work."""
+    result = CliRunner().invoke(app, command)
+
+    assert result.exit_code == 1
+    assert busy_server == []
+    output = " ".join(result.output.split())
+    assert "train.py" in output
+    assert "--yes" in output
+
+
+def test_stop_with_yes_stops_busy_server(busy_server):
+    result = CliRunner().invoke(app, ["server", "stop", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert busy_server == ["server"]
+
+
+@pytest.mark.parametrize(("answer", "stops"), [("y", ["server"]), ("n", [])])
+def test_stop_asks_before_ending_busy_server(busy_server, monkeypatch, answer, stops):
+    from EvoScientist.cli import server_cmd
+
+    monkeypatch.setattr(server_cmd, "_interactive", lambda: True)
+
+    result = CliRunner().invoke(app, ["server", "stop"], input=f"{answer}\n")
+
+    assert result.exit_code == 0, result.output
+    assert busy_server == stops
+
+
+def test_stop_idle_server_asks_nothing(busy_server, monkeypatch):
+    from EvoScientist.deploy import busy
+
+    monkeypatch.setattr(busy, "backend_has_active_runs", lambda url: False)
+
+    result = CliRunner().invoke(app, ["server", "stop"])
+
+    assert result.exit_code == 0, result.output
+    assert busy_server == ["server"]
