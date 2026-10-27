@@ -232,7 +232,7 @@ def deploy(
                     atexit.register(stop_ccproxy, _ccproxy_proc)
                     console.print("[green]✓[/green] ccproxy started")
             except RuntimeError as exc:
-                console.print(f"[red]ccproxy startup failed:[/red] {exc}")
+                console.print(f"[red]ccproxy startup failed:[/red] {escape(str(exc))}")
                 raise typer.Exit(1) from exc
 
         # 7. Start langgraph dev
