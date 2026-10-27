@@ -24,6 +24,7 @@ from ...langgraph_dev.sdk import (
     messages_input,
 )
 from ...paths import SessionDirs, Workspace
+from ..types import MEMORY_AGENT_RECURSION_LIMIT
 
 AUTOSKILL_GRAPH_ID = "evomemory-autoskills"
 AUTOSKILL_RUN_KIND = "evomemory_autoskills"
@@ -93,10 +94,13 @@ async def alist_autoskill_schedules(
     return await asyncio.to_thread(_owned_by, rows, workspace_dir)
 
 
+def _run_config(cron: dict[str, Any]) -> dict[str, Any]:
+    return (cron.get("payload") or {}).get("config") or {}
+
+
 def _forwarded_workspace(cron: dict[str, Any]) -> str | None:
     """The workspace a cron's runs forward (its run config), in stored form."""
-    payload = cron.get("payload") or {}
-    configurable = (payload.get("config") or {}).get("configurable") or {}
+    configurable = _run_config(cron).get("configurable") or {}
     return workspace_key(configurable.get("workspace_dir"))
 
 
@@ -144,8 +148,8 @@ def plan_autoskill_schedule(
             ZoneInfo(timezone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError(f"Unknown scheduler timezone {timezone!r}.") from exc
-    # A cron created before its runs forwarded the workspace, or before they
-    # ran on the workspace's assistant, does not match.
+    # A cron created before its runs forwarded the workspace, ran on the
+    # workspace's assistant or carried the memory step limit does not match.
     assistant_id = launch_assistant_id(AUTOSKILL_GRAPH_ID, workspace)
     matching = [
         row
@@ -156,6 +160,7 @@ def plan_autoskill_schedule(
         and (row.get("metadata") or {}).get("mode") == metadata["mode"]
         and _forwarded_workspace(row) == workspace.key
         and str(row.get("assistant_id")) == assistant_id
+        and _run_config(row).get("recursion_limit") == MEMORY_AGENT_RECURSION_LIMIT
     ]
     if matching:
         kept = matching[0]
@@ -189,7 +194,10 @@ def run_autoskill_now(
         assistant_id=launch_assistant_id(AUTOSKILL_GRAPH_ID, workspace),
         input=_autoskill_input(),
         metadata={**_autoskill_metadata(config=config, schedule="manual"), **folders},
-        config=run_config(workspace, thread_id=str(thread["thread_id"])),
+        config={
+            **run_config(workspace, thread_id=str(thread["thread_id"])),
+            "recursion_limit": MEMORY_AGENT_RECURSION_LIMIT,
+        },
     )
     return {"thread_id": thread["thread_id"], "run_id": run["run_id"]}
 
@@ -212,6 +220,9 @@ async def arun_autoskill_now(
         assistant_id=launch_assistant_id(AUTOSKILL_GRAPH_ID, workspace),
         input=_autoskill_input(),
         metadata={**_autoskill_metadata(config=config, schedule="manual"), **folders},
-        config=run_config(workspace, thread_id=str(thread["thread_id"])),
+        config={
+            **run_config(workspace, thread_id=str(thread["thread_id"])),
+            "recursion_limit": MEMORY_AGENT_RECURSION_LIMIT,
+        },
     )
     return {"thread_id": thread["thread_id"], "run_id": run["run_id"]}

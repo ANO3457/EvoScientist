@@ -18,6 +18,7 @@ from ..memory.autoskills.schedule import (
     AUTOSKILL_RUN_KIND,
     plan_autoskill_schedule,
 )
+from ..memory.types import MEMORY_AGENT_RECURSION_LIMIT
 from ..paths import Workspace
 from ..proactive.cron import PROACTIVE_RUN_KIND
 
@@ -175,6 +176,7 @@ async def _put(conn: Any, workspace: Workspace, cron: Any) -> None:
         input=cron.input,
         metadata=cron.metadata,
         timezone=cron.timezone,
+        recursion_limit=MEMORY_AGENT_RECURSION_LIMIT,
     )
     payload = request_payload(assistant_id, fields)
     async for _created in await Crons.put(

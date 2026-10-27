@@ -172,16 +172,21 @@ def _autoskill_cron(
     *,
     forwarded: bool,
     assistant_id: str | None = None,
+    step_limit: bool = True,
 ) -> dict:
     """An AutoSkills cron as the server returns it; by default on its
-    workspace's assistant."""
+    workspace's assistant, its runs limited to the memory step limit."""
     from EvoScientist.langgraph_dev.assistants import workspace_assistant_id
     from EvoScientist.memory.autoskills.schedule import (
         AUTOSKILL_GRAPH_ID,
         AUTOSKILL_RUN_KIND,
     )
+    from EvoScientist.memory.types import MEMORY_AGENT_RECURSION_LIMIT
 
-    payload = {"config": {"configurable": {"workspace_dir": workspace_dir}}}
+    config: dict = {"configurable": {"workspace_dir": workspace_dir}}
+    if step_limit:
+        config["recursion_limit"] = MEMORY_AGENT_RECURSION_LIMIT
+    payload = {"config": config}
     return {
         "cron_id": cron_id,
         "assistant_id": assistant_id
@@ -250,6 +255,16 @@ def test_reconcile_autoskills_leaves_cron_on_other_assistant(workspace, plan):
 
     assert result.create is not None
     assert result.delete == []
+
+
+def test_reconcile_autoskills_replaces_cron_without_step_limit(workspace, plan):
+    """A cron created before its runs carried the memory step limit."""
+    rows = [_autoskill_cron("old", workspace.key, forwarded=True, step_limit=False)]
+
+    result = plan(workspace, rows)
+
+    assert result.create is not None
+    assert [r["cron_id"] for r in result.delete] == ["old"]
 
 
 def test_reconcile_autoskills_converges_after_failed_delete(workspace, plan):

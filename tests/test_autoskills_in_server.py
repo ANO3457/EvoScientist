@@ -93,6 +93,20 @@ async def test_reconcile_in_server_creates_cron_on_workspace_assistant(
     assert cron["timezone"] == "UTC"
 
 
+async def test_reconcile_in_server_cron_runs_take_memory_step_limit(
+    runtime_store, workspace
+):
+    """langgraph-api fills a run's limit with its own unless the cron's run
+    config names one."""
+    from EvoScientist.memory.types import MEMORY_AGENT_RECURSION_LIMIT
+
+    await ensure_workspace_assistants(workspace)
+    await server_crons.reconcile_autoskills(_config(), [workspace])
+
+    (cron,) = _autoskill_crons(runtime_store)
+    assert cron["payload"]["config"]["recursion_limit"] == MEMORY_AGENT_RECURSION_LIMIT
+
+
 async def test_reconcile_in_server_keeps_matching_cron(runtime_store, workspace):
     await ensure_workspace_assistants(workspace)
     await server_crons.reconcile_autoskills(_config(), [workspace])

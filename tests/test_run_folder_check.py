@@ -580,6 +580,47 @@ def test_memory_workers_and_the_linker_forward_the_root(workspace, tmp_path):
         assert payload["config"]["configurable"]["workspace_dir"] == workspace.key
 
 
+def test_memory_runs_take_memory_step_limit(workspace, tmp_path, monkeypatch):
+    """On the server the run's config sets the limit, not the graph's own."""
+    import EvoScientist.memory.autoskills.schedule as schedule
+    from EvoScientist.memory.launch import (
+        _memory_worker_run_payload,
+        _observation_linker_run_payload,
+    )
+    from EvoScientist.memory.types import MEMORY_AGENT_RECURSION_LIMIT
+    from tests.fakes.memory import linker_context, memory_source_context
+
+    worker = _memory_worker_run_payload(
+        context=memory_source_context(
+            memory_dir=tmp_path / "memories", workspace_dir=workspace.root
+        ),
+        thread_id="t1",
+    )
+    linker = _observation_linker_run_payload(
+        context=linker_context(
+            memory_dir=tmp_path / "memories",
+            workspace_dir=workspace.root,
+            observation_ids=("o1",),
+        ),
+        thread_id="t2",
+    )
+    client = MagicMock()
+    client.threads.create.return_value = {"thread_id": "t3"}
+    client.runs.create.return_value = {"run_id": "r1"}
+    monkeypatch.setattr(schedule, "get_langgraph_sync_client", lambda **_k: client)
+    monkeypatch.setattr(schedule, "langgraph_dev_url", lambda _c: "http://x")
+    config = SimpleNamespace(
+        memory_skill_synthesis_mode=SimpleNamespace(value="propose"),
+        memory_skill_synthesis_cadence=SimpleNamespace(value="daily"),
+        memory_skill_synthesis_time="03:00",
+    )
+    schedule.run_autoskill_now(config, workspace_dir=workspace.root)
+    autoskills = client.runs.create.call_args.kwargs
+
+    for run in (worker, linker, autoskills):
+        assert run["config"]["recursion_limit"] == MEMORY_AGENT_RECURSION_LIMIT
+
+
 def test_manual_autoskills_runs_forward_the_root(workspace, monkeypatch):
     import EvoScientist.memory.autoskills.schedule as schedule
 

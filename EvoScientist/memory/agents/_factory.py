@@ -13,6 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from ... import paths as _paths
 from ...paths import Workspace
+from ..types import MEMORY_AGENT_RECURSION_LIMIT
 
 MEMORY_MAINTENANCE_EXCLUDED_TOOLS = frozenset(
     {
@@ -74,6 +75,7 @@ def build_memory_agent_graph(
     workspace_dir: str | Path,
     tools: Sequence[BaseTool],
     middleware: Sequence[AgentMiddleware],
+    recursion_limit: int = MEMORY_AGENT_RECURSION_LIMIT,
     skills: list[str] | None = None,
     backend: BackendProtocol | None = None,
 ) -> CompiledStateGraph:
@@ -81,7 +83,7 @@ def build_memory_agent_graph(
     from deepagents import create_deep_agent
 
     from ...backends import build_memory_agent_backend
-    from ...EvoScientist import _ensure_auxiliary_chat_model, _ensure_config
+    from ...EvoScientist import _ensure_auxiliary_chat_model
 
     model = _ensure_auxiliary_chat_model()
 
@@ -101,4 +103,4 @@ def build_memory_agent_graph(
         subagents=[],
         skills=skills,
     )
-    return agent.with_config({"recursion_limit": _ensure_config().recursion_limit})
+    return agent.with_config({"recursion_limit": recursion_limit})

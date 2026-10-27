@@ -168,15 +168,20 @@ def cron_request(
     timezone: str | None,
     multitask_strategy: str | None = None,
     durability: str | None = None,
+    recursion_limit: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """The assistant and the fields of a cron of *workspace* on its
-    *graph_id* assistant: tagged with it, and its runs work in it. Shared by
-    :func:`create_cron` and the server, which creates crons in process."""
+    *graph_id* assistant: tagged with it, and its runs work in it, taking at
+    most *recursion_limit* steps when given. Shared by :func:`create_cron` and
+    the server, which creates crons in process."""
+    config = run_config(workspace)
+    if recursion_limit is not None:
+        config["recursion_limit"] = recursion_limit
     kwargs: dict[str, Any] = {
         "schedule": schedule,
         "input": input,
         "metadata": {**metadata, "workspace_dir": workspace.key},
-        "config": run_config(workspace),
+        "config": config,
         "timezone": timezone,
     }
     if multitask_strategy is not None:
