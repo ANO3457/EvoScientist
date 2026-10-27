@@ -344,6 +344,11 @@ def _offer_server_start() -> None:
         # Started from the folder onboarding ran in (often the home folder),
         # it would pin the WebUI and the desktop app to that folder's project;
         # the first session in a project starts it instead.
+        console.print(
+            "[dim]The background agent service starts with your next EvoSci "
+            "session in a project, and keeps running for every session until "
+            "[bold]EvoSci service stop[/bold].[/dim]"
+        )
         return
     project = start_workspace_path(None, config.default_workdir)
     answer = questionary.confirm(
