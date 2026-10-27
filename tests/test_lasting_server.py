@@ -495,7 +495,7 @@ def test_server_status_names_server_on_another_port(monkeypatch):
     monkeypatch.setattr(
         manager,
         "_langgraph_cmdline",
-        lambda pid: ["langgraph", "dev", "--port", "7000"],
+        lambda pid: ["langgraph", "dev", "--host", "127.0.0.1", "--port", "7000"],
     )
 
     result = CliRunner().invoke(app, ["server", "status"])
@@ -657,6 +657,28 @@ def busy_server(monkeypatch):
         lambda **_k: stopped.append("server") or 42,
     )
     return stopped
+
+
+def test_stop_asks_recorded_server_on_another_port(busy_server, monkeypatch):
+    """langgraph_dev_port changed while the server ran: the stop ends the
+    recorded server, so that is the one asked whether it is busy."""
+    from EvoScientist.deploy import busy
+
+    asked = []
+    monkeypatch.setattr(manager, "recorded_address", lambda: (7000, "127.0.0.1"))
+    monkeypatch.setattr(
+        manager, "is_langgraph_dev_running", lambda *, port, host: port == 7000
+    )
+    monkeypatch.setattr(
+        busy, "backend_has_active_runs", lambda url: asked.append(url) or True
+    )
+
+    result = CliRunner().invoke(app, ["server", "stop"])
+
+    assert result.exit_code == 1
+    assert busy_server == []
+    assert asked
+    assert all(":7000" in url for url in asked)
 
 
 @pytest.mark.parametrize("command", [["server", "stop"], ["service", "stop"]])

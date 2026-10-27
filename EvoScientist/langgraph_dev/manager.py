@@ -900,6 +900,23 @@ def _langgraph_cmdline(pid: object) -> list[str] | None:
     return cmdline if any("langgraph" in arg for arg in cmdline) else None
 
 
+def recorded_address() -> tuple[int, str] | None:
+    """The port and host the recorded server serves while it is a live
+    langgraph dev, read from its command line (``langgraph_dev_port`` or
+    ``langgraph_dev_host`` may have changed since it started); ``None``
+    without a live record."""
+    sidecar = _read_workspace_sidecar()
+    cmdline = _langgraph_cmdline(sidecar.get("pid") if sidecar else None)
+    if cmdline is None:
+        return None
+    try:
+        port = int(cmdline[cmdline.index("--port") + 1])
+        host = cmdline[cmdline.index("--host") + 1]
+    except (ValueError, IndexError):
+        return None
+    return port, host
+
+
 def _packaged_langgraph_config() -> Path:
     """Return path to the package-shipped ``langgraph.json``.
 

@@ -125,11 +125,11 @@ def server_status() -> None:
     """Show the background langgraph dev server's state."""
     from ..config import get_effective_config
     from ..langgraph_dev.manager import (
-        _langgraph_cmdline,
         _pid_serves_port,
         _read_workspace_sidecar,
         configured_address,
         is_langgraph_dev_running,
+        recorded_address,
     )
 
     config = get_effective_config()
@@ -147,16 +147,11 @@ def server_status() -> None:
         pid = sidecar.get("pid")
         if _pid_serves_port(pid, port):
             console.print(f"  pid:          {pid}")
-        elif (cmdline := _langgraph_cmdline(pid)) is not None:
+        elif (address := recorded_address()) is not None:
             # langgraph_dev_port changed while it ran.
-            served = (
-                f"port {cmdline[cmdline.index('--port') + 1]}"
-                if "--port" in cmdline[:-1]
-                else "another port"
-            )
             console.print(
-                f"  pid:          {pid} [yellow](serves {served}, not port "
-                f"{port}; EvoSci server stop stops it)[/yellow]"
+                f"  pid:          {pid} [yellow](serves port {address[0]}, not "
+                f"port {port}; EvoSci server stop stops it)[/yellow]"
             )
         else:
             console.print(
@@ -213,9 +208,12 @@ def _stop_busy_server_anyway(config) -> bool:
         _base_url,
         configured_address,
         is_langgraph_dev_running,
+        recorded_address,
     )
 
-    port, host = configured_address(config)
+    # The server the stop ends: the recorded one, whatever its port, else the
+    # one on the configured port.
+    port, host = recorded_address() or configured_address(config)
     if not is_langgraph_dev_running(port=port, host=host):
         return True
     work = _busy_work(_base_url(port, host))
