@@ -156,7 +156,6 @@ def _run_until_the_check(monkeypatch, argv):
     import EvoScientist.config as config_module
     from EvoScientist.cli._app import app
     from EvoScientist.config import EvoScientistConfig
-    from EvoScientist.stream.console import console
 
     seen = []
 
@@ -171,9 +170,6 @@ def _run_until_the_check(monkeypatch, argv):
     )
     monkeypatch.setattr(config_module, "apply_config_to_env", lambda config: None)
     monkeypatch.setattr(commands, "_require_chatgpt_sign_in", _check)
-    # The CLI rebinds the shared console's stream; ``console.file`` would read
-    # back the stream of this test's capture and keep it for later tests.
-    monkeypatch.setattr(console, "_file", console._file)
     result = CliRunner().invoke(app, argv, catch_exceptions=True)
     return seen, result
 
@@ -235,7 +231,6 @@ def test_auth_mode_flag_applies_oauth_only_to_providers_in_use(
     import EvoScientist.config as config_module
     from EvoScientist.cli._app import app
     from EvoScientist.config import EvoScientistConfig
-    from EvoScientist.stream.console import console
 
     base = EvoScientistConfig(**stored)
     seen = []
@@ -251,7 +246,6 @@ def test_auth_mode_flag_applies_oauth_only_to_providers_in_use(
     )
     monkeypatch.setattr(config_module, "apply_config_to_env", lambda config: None)
     monkeypatch.setattr(commands, "_require_chatgpt_sign_in", _check)
-    monkeypatch.setattr(console, "_file", console._file)
     CliRunner().invoke(app, ["--auth-mode", flag, "-p", "hi"])
 
     assert seen == [modes]

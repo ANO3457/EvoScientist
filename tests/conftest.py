@@ -420,6 +420,18 @@ def _isolate_user_dirs(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _restore_console_stream(monkeypatch):
+    """The CLI points the shared console at stderr (stream-json, ``deploy
+    --json``), and reading ``console.file`` back yields the running test's
+    captured stream: either would stay for every later test in the worker,
+    whose CLI output then goes missing."""
+    from EvoScientist.stream.console import console
+
+    monkeypatch.setattr(console, "_file", console._file)
+    monkeypatch.setattr(console, "stderr", console.stderr)
+
+
+@pytest.fixture(autouse=True)
 def _no_registration(monkeypatch):
     """Clients register their project with the server they use; tests that
     fake a running server would otherwise send the request. A test of the
