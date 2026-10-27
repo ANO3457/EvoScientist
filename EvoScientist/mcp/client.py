@@ -397,16 +397,17 @@ _MAX_CONCURRENT_CONNECTIONS = 8
 # Per-server time limit for ``get_tools`` inside ``langgraph dev`` (see
 # :func:`_get_tools_timeout`).  A server that hasn't answered by then is
 # skipped like one that failed, so a single slow server can't hold up the
-# rest.  The server builds its graphs, and so loads MCP tools, before
-# answering ``/ok``, so this is sized for the 60s health budget in
-# ``start_langgraph_dev`` while still leaving room for a first ``npx -y``
-# launch that downloads its package.  Shutting down a stdio server that timed
-# out adds up to ~4s on top (the MCP SDK's termination waits).
+# rest.  The server loads MCP tools when it first builds a project's graph,
+# after it answers ``/ok``, one build at a time: a slow load holds up the
+# builds waiting behind it, so this is bounded while still leaving room for a
+# first ``npx -y`` launch that downloads its package.  Shutting down a stdio
+# server that timed out adds up to ~4s on top (the MCP SDK's termination
+# waits).
 #
 # It is not a hard bound on the whole load: the limit starts once a server
 # gets a slot under ``_MAX_CONCURRENT_CONNECTIONS``, so with more than that
 # many servers hanging, the ones queued behind them can still push the load
-# past 60s.
+# past it.
 _SERVER_GET_TOOLS_TIMEOUT_SECONDS = 40
 
 # Healthy remote servers usually list tools within a few seconds; 20s leaves
@@ -956,7 +957,8 @@ def _ensure_node_for_stdio(config: dict[str, Any]) -> None:
     race the server's health deadline with its progress hidden in the server
     log, so ``start_langgraph_dev`` runs this before spawning instead. The
     server, which outlives sessions, only puts on its PATH a private Node that
-    a session or ``EvoSci setup`` installed since it started.
+    a session or ``EvoSci setup`` installed since it started, at its first MCP
+    load: the tool cache keeps that load while ``mcp.yaml`` is unchanged.
     """
     missing = [
         name
@@ -1257,14 +1259,15 @@ async def _load_tools(
         _report("error", name, detail)
         return name, []
 
+    hint = "Run 'EvoSci setup' to install Node.js"
+    if paths.SERVER_PROCESS:
+        # The server keeps this load until it restarts.
+        hint += ", then 'EvoSci server stop' (the next session starts it again)"
     skipped: dict[str, list] = {}
     for name in unresolved:
         _report("start", name)
         command = config[name]["command"]
-        _fail(
-            name,
-            f"{command} was not found on PATH. Run 'EvoSci setup' to install Node.js",
-        )
+        _fail(name, f"{command} was not found on PATH. {hint}")
         skipped[name] = []
     if not connections:
         return skipped

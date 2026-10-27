@@ -2587,6 +2587,29 @@ class TestLoadToolsProgressCallback:
             ),
         ]
 
+    async def test_unresolved_node_server_in_langgraph_dev_names_server_stop(
+        self, monkeypatch, tmp_path
+    ):
+        """The server keeps a failed load until it restarts, so EvoSci setup
+        alone does not bring the server's tools back."""
+        from EvoScientist.mcp import client as mcp_client
+
+        monkeypatch.setattr(paths, "SERVER_PROCESS", True)
+        monkeypatch.setattr(mcp_client, "_ensure_node_for_stdio", lambda _c: None)
+        monkeypatch.setattr(
+            mcp_client.sys, "executable", str(tmp_path / "nowhere" / "python")
+        )
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        events: list[tuple[str, str, str]] = []
+
+        await mcp_client._load_tools(
+            {"fs": {"transport": "stdio", "command": "npx", "args": []}},
+            on_progress=lambda *e: events.append(e),
+        )
+
+        (failure,) = [e for e in events if e[0] == "error"]
+        assert "EvoSci server stop" in failure[2]
+
     async def test_unresolved_node_server_alone_returns_its_failure(
         self, monkeypatch, tmp_path
     ):

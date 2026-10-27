@@ -1319,9 +1319,8 @@ def start_langgraph_dev(
         lasting=lasting,
     )
 
-    # langgraph dev cold-starts in ~10-15s normally; first-time npx-based MCP
-    # servers can push this to 30-60s while npm fetches packages, so the budget
-    # is generous. Subsequent runs are much faster thanks to npm cache.
+    # langgraph dev cold-starts in ~10-15s normally, so the budget is
+    # generous. MCP servers load later, when a project's graph is first built.
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if proc.poll() is not None:
