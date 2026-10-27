@@ -671,7 +671,8 @@ def _kill_owned_stale_process(port: int) -> bool:
 
 # Packaged sub-agent specs — consumed at graph build; module constant so
 # tests can redirect it.
-_SUBAGENTS_DIR = Path(__file__).resolve().parent.parent / "subagents"
+_PACKAGE_DIR = Path(__file__).resolve().parent.parent
+_SUBAGENTS_DIR = _PACKAGE_DIR / "subagents"
 
 # Fields the server reads from config.yaml itself: no environment variable
 # carries them, so a command-line override (--auto-approve, --auto-mode, the
@@ -691,8 +692,10 @@ def _server_config_fingerprint(config: EvoScientistConfig) -> str:
     (:func:`~EvoScientist.config.settings.is_client_only`) — a new config
     field counts toward drift by default — and folds in ``mcp.yaml`` plus the packaged
     ``subagents/*.yaml``, which are consumed at graph build too. The
-    EvoScientist version is part of it, so a server left running across an
-    upgrade counts as drift as well. Secrets
+    EvoScientist version is part of it, and for an editable install each
+    source file's path and modification time, so a server left running
+    across an upgrade, or across a source checkout's new commit, counts as
+    drift as well. Secrets
     only feed a truncated one-way digest; nothing recoverable is stored.
     getattr with defaults: deploy/WebUI (and their tests) routinely hand
     this module duck-typed config objects missing dataclass fields.
@@ -731,6 +734,17 @@ def _server_config_fingerprint(config: EvoScientistConfig) -> str:
         for yaml_path in sorted(_SUBAGENTS_DIR.glob("*.yaml")):
             digest.update(yaml_path.name.encode("utf-8"))
             digest.update(yaml_path.read_bytes())
+    except OSError:
+        pass
+    from EvoScientist.ccproxy_manager import _is_editable_install
+
+    # A source checkout changes its code without a version bump (a pull, a
+    # branch switch): a few milliseconds to notice it.
+    try:
+        if _is_editable_install():
+            for path in sorted(_PACKAGE_DIR.rglob("*.py")):
+                stamp = f"{path.relative_to(_PACKAGE_DIR)}:{path.stat().st_mtime_ns}"
+                digest.update(stamp.encode("utf-8"))
     except OSError:
         pass
     return digest.hexdigest()[:16]

@@ -793,3 +793,33 @@ def test_server_config_fingerprint_reads_flagged_field_from_file():
     assert manager._server_config_fingerprint(flagged) == (
         manager._server_config_fingerprint(plain)
     )
+
+
+@pytest.mark.parametrize("editable", [True, False])
+def test_server_config_fingerprint_tracks_source_changes(
+    tmp_path, monkeypatch, editable
+):
+    """A source checkout changes its code without a version bump: an edited
+    file and a deleted one both count. Two installs of one release do not."""
+    import os
+
+    from EvoScientist import ccproxy_manager
+
+    monkeypatch.setattr(ccproxy_manager, "_is_editable_install", lambda: editable)
+    package = tmp_path / "pkg"
+    package.mkdir()
+    old, edited = package / "old.py", package / "edited.py"
+    for module in (old, edited):
+        module.write_text("x = 1\n", encoding="utf-8")
+    os.utime(old, ns=(1_000_000_000, 1_000_000_000))
+    monkeypatch.setattr(manager, "_PACKAGE_DIR", package)
+    cfg = manager.EvoScientistConfig()
+    base = manager._server_config_fingerprint(cfg)
+
+    later = edited.stat().st_mtime_ns + 1_000_000_000
+    os.utime(edited, ns=(later, later))
+    after_edit = manager._server_config_fingerprint(cfg)
+    old.unlink()
+
+    seen = {base, after_edit, manager._server_config_fingerprint(cfg)}
+    assert len(seen) == (3 if editable else 1)
