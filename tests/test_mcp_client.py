@@ -3215,10 +3215,15 @@ class TestEnsureNodeForStdio:
             mcp_client, "_ensure_node_for_stdio", lambda _c: order.append("node")
         )
         monkeypatch.setattr(
+            mcp_client,
+            "_unresolved_node_servers",
+            lambda _c: order.append("lookup") or [],
+        )
+        monkeypatch.setattr(
             mcp_client, "_build_connections", lambda _c: order.append("connect") or {}
         )
         await mcp_client._load_tools({"fs": {"transport": "stdio", "command": "npx"}})
-        assert order == ["node", "connect"]
+        assert order == ["node", "lookup", "connect"]
 
     async def test_load_tools_builds_connections_off_the_event_loop(self, monkeypatch):
         """Under mirror: cn building them may run ``npm config get registry``."""

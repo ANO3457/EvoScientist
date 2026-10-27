@@ -823,3 +823,16 @@ def test_server_config_fingerprint_tracks_source_changes(
 
     seen = {base, after_edit, manager._server_config_fingerprint(cfg)}
     assert len(seen) == (3 if editable else 1)
+
+
+def test_server_config_fingerprint_keeps_flagged_auth_mode():
+    """A lasting server takes its starter's --auth-mode: the fingerprint
+    hashes that one, so a later session with another one sees the drift."""
+    from EvoScientist.config import settings
+
+    plain = manager.EvoScientistConfig()
+    flagged = manager.EvoScientistConfig(openai_auth_mode="oauth")
+    settings.record_env_origin("EVOSCIENTIST_OPENAI_AUTH_MODE", "cli")
+    assert manager._server_config_fingerprint(flagged) != (
+        manager._server_config_fingerprint(plain)
+    )

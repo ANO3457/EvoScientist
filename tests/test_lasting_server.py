@@ -331,12 +331,13 @@ def test_server_stop_leaves_ccproxy(monkeypatch):
     """Open sessions on the local backend route through it."""
     import EvoScientist.ccproxy_manager as ccproxy_mod
 
-    monkeypatch.setattr(manager, "stop_recorded_server", lambda: 42)
+    monkeypatch.setattr(manager, "stop_recorded_server", lambda **_k: 42)
     stopped = []
     monkeypatch.setattr(ccproxy_mod, "stop_recorded_ccproxy", lambda: stopped.append(1))
 
-    CliRunner().invoke(app, ["server", "stop"])
+    result = CliRunner().invoke(app, ["server", "stop"])
 
+    assert result.exit_code == 0, result.output
     assert stopped == []
 
 
@@ -412,6 +413,41 @@ def test_service_stop_leaves_ccproxy_for_unrecorded_server(monkeypatch):
     assert result.exit_code == 0, result.output
     assert stopped == []
     assert "EvoSci ccproxy stop" in " ".join(result.output.split())
+
+
+@pytest.mark.parametrize(
+    ("sidecar", "cmdline"),
+    [
+        ({"workspace": "/a", "pid": 4242, "lasting": False}, None),
+        ({"workspace": "/a", "pid": 4242}, ["langgraph"]),
+    ],
+    ids=["server-gone", "older-release"],
+)
+def test_service_stop_stops_server_nobody_else_owns(
+    monkeypatch, tmp_path, sidecar, cmdline
+):
+    """A deploy record whose server no longer runs, and an older release's
+    record, which does not say, are the service's to stop."""
+    import EvoScientist.ccproxy_manager as ccproxy_mod
+
+    stopped = []
+    monkeypatch.setattr(
+        manager, "RUNTIME", manager.LanggraphRuntimePaths.for_directory(tmp_path)
+    )
+    monkeypatch.setattr(manager, "_read_workspace_sidecar", lambda: sidecar)
+    monkeypatch.setattr(manager, "_langgraph_cmdline", lambda pid: cmdline)
+    monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_k: False)
+    monkeypatch.setattr(
+        manager, "_stop_recorded_server_locked", lambda: stopped.append("server") or 42
+    )
+    monkeypatch.setattr(
+        ccproxy_mod, "stop_recorded_ccproxy", lambda: stopped.append("ccproxy") or 7
+    )
+
+    result = CliRunner().invoke(app, ["service", "stop"])
+
+    assert result.exit_code == 0, result.output
+    assert stopped == ["server", "ccproxy"]
 
 
 def test_server_stop_stops_deploy_owned_server(monkeypatch, tmp_path):
@@ -774,8 +810,13 @@ def test_stop_without_terminal_refuses_busy_server(busy_server, command):
     assert "--yes" in output
 
 
-def test_stop_with_yes_stops_busy_server(busy_server):
-    result = CliRunner().invoke(app, ["server", "stop", "--yes"])
+@pytest.mark.parametrize("group", ["server", "service"])
+def test_stop_with_yes_stops_busy_server(busy_server, monkeypatch, group):
+    import EvoScientist.ccproxy_manager as ccproxy_mod
+
+    monkeypatch.setattr(ccproxy_mod, "stop_recorded_ccproxy", lambda: None)
+
+    result = CliRunner().invoke(app, [group, "stop", "--yes"])
 
     assert result.exit_code == 0, result.output
     assert busy_server == ["server"]
