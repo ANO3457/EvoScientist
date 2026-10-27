@@ -9,6 +9,7 @@ the ccproxy it and the sessions route through (``EvoSci ccproxy``).
 from __future__ import annotations
 
 import typer  # type: ignore[import-untyped]
+from rich.markup import escape
 
 from ..stream.console import console
 from ._app import ccproxy_app, service_app
@@ -73,7 +74,7 @@ def ccproxy_start() -> None:
         with console.status("[dim]Starting ccproxy...[/dim]", spinner="dots"):
             maybe_start_ccproxy(config, lasting=True)
     except (RuntimeError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
     if was_running:
         console.print(f"[green]✓[/green] ccproxy was already running on port {port}.")

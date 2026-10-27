@@ -599,3 +599,21 @@ def test_lost_ccproxy_start_race_is_not_recorded(monkeypatch, tmp_path):
     ccproxy_mod.maybe_start_ccproxy(config, lasting=True)
 
     assert not (tmp_path / "ccproxy.pid").exists()
+
+
+def test_ccproxy_start_failure_keeps_install_hint(monkeypatch):
+    """The hint's ``[oauth]`` extra is text, not markup."""
+    import EvoScientist.ccproxy_manager as ccproxy_mod
+
+    monkeypatch.setattr(ccproxy_mod, "uses_oauth", lambda _config: True)
+    monkeypatch.setattr(ccproxy_mod, "is_ccproxy_running", lambda _port: False)
+
+    def missing(config, *, lasting):
+        raise RuntimeError("Install it with: pip install 'evoscientist[oauth]'")
+
+    monkeypatch.setattr(ccproxy_mod, "maybe_start_ccproxy", missing)
+
+    result = CliRunner().invoke(app, ["ccproxy", "start"])
+
+    assert result.exit_code == 1
+    assert "evoscientist[oauth]" in result.output

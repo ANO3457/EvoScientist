@@ -2258,7 +2258,7 @@ def serve(
             # server to share (EvoSci ccproxy stop / service stop).
             maybe_start_ccproxy(config, lasting=True)
         except RuntimeError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
 
     if not config.channel_enabled:
@@ -3258,7 +3258,7 @@ def _main_callback(
             # server to share (EvoSci ccproxy stop / service stop).
             maybe_start_ccproxy(config, lasting=True)
         except RuntimeError as exc:
-            console.print(f"[red]{exc}[/red]")
+            console.print(f"[red]{escape(str(exc))}[/red]")
             raise typer.Exit(1) from exc
 
     show_thinking = config.show_thinking if not no_thinking else False
