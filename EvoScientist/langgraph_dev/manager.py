@@ -169,6 +169,13 @@ SERVER_UNAVAILABLE = False
 # session's project can be reached from other machines, as it answered;
 # ``None`` when no server registered it.
 SERVER_EXPOSURE: registration.ServerExposure | None = None
+# Shown when CONFIG_DRIFT_SINCE_LAUNCH is set, by the CLI and in the TUI.
+CONFIG_DRIFT_MESSAGE = (
+    "Configuration or version changed since the background agent server was "
+    "launched — it still runs the old settings or version. Apply them with "
+    "EvoSci server stop (which ends its running background work), then restart "
+    "EvoSci."
+)
 SERVER_UNAVAILABLE_MESSAGE = (
     "The background agent server is unavailable for this project; async "
     "subagents and EvoMemory workers are off for this session."

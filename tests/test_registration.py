@@ -561,6 +561,17 @@ def test_dangerous_flag_note_says_where_it_applies(monkeypatch, flagged, backend
         assert note in notices
 
 
+def test_tui_notices_name_config_drift(monkeypatch):
+    """The terminal, where the CLI prints it, is hidden while the TUI runs."""
+    from EvoScientist.cli.tui_interactive import _agent_shell_notices
+    from EvoScientist.langgraph_dev import manager
+
+    monkeypatch.setattr(manager, "CONFIG_DRIFT_SINCE_LAUNCH", True)
+    assert manager.CONFIG_DRIFT_MESSAGE in _agent_shell_notices()
+    monkeypatch.setattr(manager, "CONFIG_DRIFT_SINCE_LAUNCH", False)
+    assert manager.CONFIG_DRIFT_MESSAGE not in _agent_shell_notices()
+
+
 def test_tui_notices_name_unavailable_server(monkeypatch):
     """The terminal is hidden while the TUI runs."""
     from EvoScientist.cli.tui_interactive import _agent_shell_notices
