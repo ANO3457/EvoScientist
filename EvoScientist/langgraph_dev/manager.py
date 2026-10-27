@@ -1195,13 +1195,16 @@ def start_langgraph_dev(
 
     # POSIX: own session so the child can be group-signalled on cleanup, and
     # outlives the terminal. Windows: own process group, so Ctrl+C in the
-    # terminal does not reach the server. It still shares the parent's
-    # console: no new window opens, and closing that console ends the server.
+    # terminal does not reach the server. A lasting server also gets a console
+    # of its own, without a window, so closing the terminal does not end it;
+    # its children (MCP servers, Git Bash commands) share that hidden console
+    # and open no windows. A server a session owns keeps the terminal's.
     if os.name == "nt":
-        # getattr keeps this import-safe off Windows (the flag is Windows-only).
-        _spawn_kwargs = {
-            "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        }
+        # getattr keeps this import-safe off Windows (the flags are Windows-only).
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if lasting:
+            flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        _spawn_kwargs = {"creationflags": flags}
     else:
         _spawn_kwargs = {"start_new_session": True}
     if job is not None:

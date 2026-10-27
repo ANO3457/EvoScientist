@@ -1001,25 +1001,30 @@ class TestReadTunnelUrl:
 
 class TestStartLanggraphDevSpawnFlags:
     """On Windows the langgraph dev child gets its own process group (Ctrl+C
-    does not reach it) but keeps the parent's console, so closing the console
-    ends it. On POSIX it gets its own session."""
+    does not reach it); a lasting one also gets a console of its own, so
+    closing the terminal does not end it, while one a session owns keeps the
+    terminal's console. On POSIX it gets its own session."""
 
+    @pytest.mark.parametrize(
+        ("lasting", "flags"), [(True, 0x08000200), (False, 0x00000200)]
+    )
     def test_windows_uses_new_process_group(
-        self, start_langgraph_dev_capture, monkeypatch
+        self, start_langgraph_dev_capture, monkeypatch, lasting, flags
     ):
         env = start_langgraph_dev_capture
         monkeypatch.setattr(manager.os, "name", "nt", raising=False)
         monkeypatch.setattr(
             manager.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False
         )
+        monkeypatch.setattr(
+            manager.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False
+        )
         try:
-            manager.start_langgraph_dev(workspace_dir=env.tmp_path)
+            manager.start_langgraph_dev(workspace_dir=env.tmp_path, lasting=lasting)
         except FileNotFoundError:
             pass  # _fake_popen stops before the real spawn
         kw = env.captured["kwargs"]
-        # Exactly the process-group flag: no CREATE_NO_WINDOW, which would
-        # detach the server from the console and let it outlive a closed one.
-        assert kw.get("creationflags") == 0x00000200
+        assert kw.get("creationflags") == flags
         assert "start_new_session" not in kw
 
     def test_posix_uses_new_session(self, start_langgraph_dev_capture, monkeypatch):

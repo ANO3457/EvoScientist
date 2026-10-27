@@ -212,7 +212,11 @@ def start_ccproxy(port: int, *, detached: bool = False) -> subprocess.Popen:
     spawn: dict = {}
     if detached:
         if os.name == "nt":
-            spawn["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            # A console of its own, without a window: closing the terminal
+            # does not end it.
+            spawn["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            ) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         else:
             spawn["start_new_session"] = True
     proc = subprocess.Popen(

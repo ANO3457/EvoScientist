@@ -417,7 +417,9 @@ def test_start_ccproxy_detached_runs_in_own_session(monkeypatch):
     ccproxy_mod.start_ccproxy(8000, detached=True)
 
     if ccproxy_mod.os.name == "nt":
-        assert spawned["creationflags"]
+        assert spawned["creationflags"] == (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        )
     else:
         assert spawned["start_new_session"] is True
 

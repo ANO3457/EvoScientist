@@ -436,8 +436,8 @@ def test_start_without_a_job_keeps_the_spawn_flags(
     with pytest.raises(PopenAbort):
         manager.start_langgraph_dev(workspace_dir=tmp_path, port=16179)
     if manager.os.name == "nt":
-        assert (
-            captured["kwargs"]["creationflags"] == subprocess.CREATE_NEW_PROCESS_GROUP
+        assert captured["kwargs"]["creationflags"] == (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         )
     else:
         assert captured["kwargs"]["start_new_session"] is True
