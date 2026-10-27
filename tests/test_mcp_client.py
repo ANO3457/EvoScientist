@@ -142,6 +142,7 @@ class TestResolveCommand:
 
         assert Path(_resolve_command("./srv.sh")) == tool
 
+    @pytest.mark.skipif(os.name != "nt", reason="Windows executable lookup")
     def test_windows_venv_exe_found_next_to_python(self, tmp_path, monkeypatch):
         """A venv console script on Windows is ``<name>.exe``."""
         (tmp_path / "my-mcp-tool.exe").write_text("")
@@ -149,7 +150,6 @@ class TestResolveCommand:
         monkeypatch.setattr(
             "EvoScientist.mcp.client.sys.executable", str(tmp_path / "python.exe")
         )
-        monkeypatch.setattr("EvoScientist.mcp.client.os.name", "nt")
 
         assert _resolve_command("my-mcp-tool") == str(tmp_path / "my-mcp-tool.exe")
 
