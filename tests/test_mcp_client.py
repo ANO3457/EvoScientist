@@ -3168,7 +3168,11 @@ class TestEnsureNodeForStdio:
             )
         assert "compression type 99" in caplog.text
 
-    def test_does_not_install_inside_langgraph_dev(self, monkeypatch, calls, tmp_path):
+    def test_langgraph_dev_uses_node_installed_since_start_without_installing(
+        self, monkeypatch, calls, tmp_path
+    ):
+        """The server lasts across sessions: a session or EvoSci setup may
+        have installed the private Node after it started."""
         from EvoScientist.mcp import client as mcp_client
 
         monkeypatch.setattr(paths, "SERVER_PROCESS", True)
@@ -3176,7 +3180,7 @@ class TestEnsureNodeForStdio:
         mcp_client._ensure_node_for_stdio(
             {"fs": {"transport": "stdio", "command": "npx"}}
         )
-        assert calls == {"ensure": 0, "activate": 0}
+        assert calls == {"ensure": 0, "activate": 1}
 
     async def test_load_tools_checks_node_before_building_connections(
         self, monkeypatch

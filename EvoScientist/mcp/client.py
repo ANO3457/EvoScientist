@@ -951,13 +951,13 @@ def _ensure_node_for_stdio(config: dict[str, Any]) -> None:
     ``npm`` and that command is not on PATH.
 
     Covers users who never ran ``EvoSci setup``. A failed install is logged and
-    the server then fails to start as it would without Node. Never runs inside
-    ``langgraph dev`` (``paths.SERVER_PROCESS``): a download there would
+    the server then fails to start as it would without Node. Never installs
+    inside ``langgraph dev`` (``paths.SERVER_PROCESS``): a download there would
     race the server's health deadline with its progress hidden in the server
-    log, so ``start_langgraph_dev`` runs this before spawning instead.
+    log, so ``start_langgraph_dev`` runs this before spawning instead. The
+    server, which outlives sessions, only puts on its PATH a private Node that
+    a session or ``EvoSci setup`` installed since it started.
     """
-    if paths.SERVER_PROCESS:
-        return
     missing = [
         name
         for name, server in config.items()
@@ -974,6 +974,10 @@ def _ensure_node_for_stdio(config: dict[str, Any]) -> None:
         return
     from ..setup.node import activate_runtime, ensure_node, log_progress
     from ..setup.protocol import StageError
+
+    if paths.SERVER_PROCESS:
+        activate_runtime()
+        return
 
     try:
         ensure_node(progress=log_progress(logger))
