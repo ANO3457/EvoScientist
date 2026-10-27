@@ -542,3 +542,18 @@ def test_server_marker_read_once_and_removed(tmp_path):
         [sys.executable, "-c", code], env=env, capture_output=True, text=True
     )
     assert out.stdout.split() == ["True", "False"], out.stderr
+
+
+@pytest.mark.parametrize(
+    ("path", "shown"),
+    [
+        ("/home/me/proj", "/home/me/proj"),
+        ("/home/me/My Projects/app", '"/home/me/My Projects/app"'),
+        (r"C:\Users\me\My Projects", r'"C:\Users\me\My Projects"'),
+    ],
+)
+def test_command_arg_quotes_paths_with_whitespace(path, shown):
+    """A printed command the user copies must keep the path one argument."""
+    from EvoScientist.paths import command_arg
+
+    assert command_arg(path) == shown

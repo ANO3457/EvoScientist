@@ -53,6 +53,14 @@ def host_file_tool_path(path: str) -> str:
     return path
 
 
+def command_arg(path: str | Path) -> str:
+    """*path* as a command printed for the user to copy takes it: in double
+    quotes when it holds whitespace, which POSIX shells, ``cmd`` and
+    PowerShell all read as one argument."""
+    shown = str(path)
+    return f'"{shown}"' if any(ch.isspace() for ch in shown) else shown
+
+
 # What reading a stored or forwarded folder value can raise: a wrong type,
 # a NUL byte, an unresolvable path or a symlink loop.
 PATH_ERRORS = (TypeError, ValueError, OSError, RuntimeError)

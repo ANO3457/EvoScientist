@@ -60,7 +60,7 @@ def start_background(workdir: str | None, *, with_ccproxy: bool) -> None:
     from ..langgraph_dev import manager
     from ..langgraph_dev.registration import ServerUnusableError
     from ..langgraph_dev.sdk import langgraph_dev_url
-    from ..paths import start_workspace_path
+    from ..paths import command_arg, start_workspace_path
     from .commands import (
         _prepare_workdir_or_exit,
         _print_server_notices,
@@ -91,7 +91,7 @@ def start_background(workdir: str | None, *, with_ccproxy: bool) -> None:
     stop = "EvoSci service stop" if with_ccproxy else "EvoSci server stop"
     start_cmd = (
         f"EvoSci {'service' if with_ccproxy else 'server'} start "
-        f"--workdir {escape(str(project))}"
+        f"--workdir {escape(command_arg(project))}"
     )
     url = langgraph_dev_url(config)
     # Of two starts at once, the one that lost the race for the port only

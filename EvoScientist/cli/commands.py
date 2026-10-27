@@ -34,6 +34,7 @@ from ..llm.context_window import DEFAULT_CONTEXT_WINDOW_FALLBACK, resolve_contex
 from ..paths import (
     SessionDirs,
     Workspace,
+    command_arg,
     ensure_dirs,
     start_workspace_path,
 )
@@ -325,7 +326,7 @@ def _offer_server_start() -> None:
         sidecar = manager._read_workspace_sidecar()
         if manager.is_lasting(sidecar):
             # From the project it was started from, which the WebUI opens.
-            workspace = escape(str(sidecar.get("workspace") or "<project>"))
+            workspace = escape(command_arg(sidecar.get("workspace") or "<project>"))
             console.print(
                 "[dim]The background agent service runs with your previous "
                 "settings; to apply the new ones, restart it: [bold]EvoSci "
