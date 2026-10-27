@@ -492,11 +492,7 @@ def test_server_status_names_server_on_another_port(monkeypatch):
         manager, "_read_workspace_sidecar", lambda: {"workspace": "/a", "pid": 4242}
     )
     monkeypatch.setattr(manager, "_pid_serves_port", lambda *_a: False)
-    monkeypatch.setattr(
-        manager,
-        "_langgraph_cmdline",
-        lambda pid: ["langgraph", "dev", "--host", "127.0.0.1", "--port", "7000"],
-    )
+    monkeypatch.setattr(manager, "recorded_address", lambda: (7000, "127.0.0.1"))
 
     result = CliRunner().invoke(app, ["server", "status"])
 
@@ -676,6 +672,7 @@ def busy_server(monkeypatch):
     from EvoScientist.deploy import busy
 
     stopped: list = []
+    monkeypatch.setattr(manager, "recorded_address", lambda: (6174, "127.0.0.1"))
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_k: True)
     monkeypatch.setattr(busy, "backend_has_active_runs", lambda url: True)
     monkeypatch.setattr(busy, "running_bg_process_names", lambda url: ["train.py"])
@@ -686,6 +683,44 @@ def busy_server(monkeypatch):
         lambda **_k: stopped.append("server") or 42,
     )
     return stopped
+
+
+def test_stop_without_record_asks_nothing(busy_server, monkeypatch):
+    """A busy server on the port that no record names is not one the stop
+    ends: no question, nor --yes in a script."""
+    monkeypatch.setattr(manager, "recorded_address", lambda: None)
+
+    result = CliRunner().invoke(app, ["server", "stop"])
+
+    assert result.exit_code == 0, result.output
+    assert "--yes" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("cmdline", "address"),
+    [
+        (
+            ["langgraph", "dev", "--host", "0.0.0.0", "--port", "7000"],
+            (7000, "0.0.0.0"),
+        ),
+        # Releases before the bind host was configurable bound loopback.
+        (["langgraph", "dev", "--port", "7000"], (7000, "127.0.0.1")),
+        (["langgraph", "dev"], None),
+    ],
+)
+def test_recorded_address_reads_pid_file_server(
+    monkeypatch, tmp_path, cmdline, address
+):
+    monkeypatch.setattr(
+        manager, "RUNTIME", manager.LanggraphRuntimePaths.for_directory(tmp_path)
+    )
+    manager.RUNTIME.pid_dir.mkdir(parents=True, exist_ok=True)
+    manager.RUNTIME.pid_file.write_text("4242")
+    monkeypatch.setattr(
+        manager, "_langgraph_cmdline", lambda pid: cmdline if pid == 4242 else None
+    )
+
+    assert manager.recorded_address() == address
 
 
 def test_service_stop_asks_nothing_of_owned_busy_server(busy_server, monkeypatch):

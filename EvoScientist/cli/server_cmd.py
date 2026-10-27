@@ -202,21 +202,24 @@ def _busy_work(url: str) -> str | None:
     return "; ".join(work) or "work in progress"
 
 
-def _stop_busy_server_anyway(config) -> bool:
-    """Whether to go on with a stop: always for an idle server; for a busy
-    one, after asking, since it serves every project and its runs and
-    background jobs are not kept. Without a terminal to ask in, it is refused
-    (exit 1), as ``EvoSci update`` does; ``--yes`` skips the question."""
+def _stop_busy_server_anyway() -> bool:
+    """Whether to go on with a stop: always when it ends no server or an
+    idle one; for a busy one, after asking, since it serves every project and
+    its runs and background jobs are not kept. Without a terminal to ask in,
+    it is refused (exit 1), as ``EvoSci update`` does; ``--yes`` skips the
+    question."""
     from ..langgraph_dev.manager import (
         _base_url,
-        configured_address,
         is_langgraph_dev_running,
         recorded_address,
     )
 
-    # The server the stop ends: the recorded one, whatever its port, else the
-    # one on the configured port.
-    port, host = recorded_address() or configured_address(config)
+    # The server the stop ends is the recorded one, whatever its port; a
+    # server without a record is not touched.
+    address = recorded_address()
+    if address is None:
+        return True
+    port, host = address
     if not is_langgraph_dev_running(port=port, host=host):
         return True
     work = _busy_work(_base_url(port, host))
@@ -253,7 +256,7 @@ def stop_server(*, keep_owned: bool = False, yes: bool = False) -> bool:
 
     # A server service stop leaves running needs no question about its work.
     kept = keep_owned and owned_by_its_starter()
-    if not yes and not kept and not _stop_busy_server_anyway(get_effective_config()):
+    if not yes and not kept and not _stop_busy_server_anyway():
         return True
     try:
         pid = stop_recorded_server(keep_owned=keep_owned)

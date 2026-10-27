@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from dataclasses import fields as dataclass_fields
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -910,20 +911,25 @@ def _langgraph_cmdline(pid: object) -> list[str] | None:
 
 
 def recorded_address() -> tuple[int, str] | None:
-    """The port and host the recorded server serves while it is a live
-    langgraph dev, read from its command line (``langgraph_dev_port`` or
-    ``langgraph_dev_host`` may have changed since it started); ``None``
-    without a live record."""
-    sidecar = _read_workspace_sidecar()
-    cmdline = _langgraph_cmdline(sidecar.get("pid") if sidecar else None)
+    """The port and host of the server in the PID file, the one ``EvoSci
+    server stop`` ends, while it is a live langgraph dev, read from its
+    command line (``langgraph_dev_port`` or ``langgraph_dev_host`` may have
+    changed since it started); ``None`` without one."""
+    try:
+        pid = int(RUNTIME.pid_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    cmdline = _langgraph_cmdline(pid)
     if cmdline is None:
         return None
+    started_with = dict(pairwise(cmdline))
     try:
-        port = int(cmdline[cmdline.index("--port") + 1])
-        host = cmdline[cmdline.index("--host") + 1]
-    except (ValueError, IndexError):
+        port = int(started_with["--port"])
+    except (KeyError, ValueError):
         return None
-    return port, host
+    # Releases before the bind host was configurable passed no --host and
+    # bound loopback.
+    return port, started_with.get("--host", _DEFAULT_HOST)
 
 
 def _packaged_langgraph_config() -> Path:
