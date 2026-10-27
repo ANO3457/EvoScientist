@@ -420,6 +420,16 @@ def _isolate_user_dirs(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_env_origins(monkeypatch):
+    """Where this process's configuration variables came from is recorded in
+    one dict; what one test records (a flag's, say) would change what the
+    server gets and the drift fingerprint in later tests."""
+    from EvoScientist.config import settings
+
+    monkeypatch.setattr(settings, "_ENV_ORIGINS", {})
+
+
+@pytest.fixture(autouse=True)
 def _restore_console_stream(monkeypatch):
     """The CLI points the shared console at stderr (stream-json, ``deploy
     --json``), and reading ``console.file`` back yields the running test's

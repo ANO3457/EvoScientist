@@ -1681,7 +1681,10 @@ def _apply_config_to_env(config: EvoScientistConfig) -> None:
     # Bidirectional: clear it when off so a re-apply with a lower config (or a
     # stale value) can't leave the process stuck in dangerous mode.
     if config.dangerous_mode:
-        os.environ["EVOSCIENTIST_DANGEROUS_MODE"] = "true"
+        # The user's own true export (``1``, ``yes``) stays as it is, so it is
+        # not recorded as a flag's.
+        if not _coerce_value(os.environ.get("EVOSCIENTIST_DANGEROUS_MODE", ""), bool):
+            os.environ["EVOSCIENTIST_DANGEROUS_MODE"] = "true"
     else:
         os.environ.pop("EVOSCIENTIST_DANGEROUS_MODE", None)
     if config.use_responses_api and not os.environ.get(

@@ -211,7 +211,9 @@ class TestServerRecord:
             manager.start_langgraph_dev(workspace_dir=tmp_path, port=16178)
 
         assert "EVOSCIENTIST_UI_BACKEND" not in captured["env"]
-        assert "EVOSCIENTIST_UI_BACKEND" not in _server_env_origins("6174", "x")
+        assert "EVOSCIENTIST_UI_BACKEND" not in _server_env_origins(
+            "6174", "x", lasting=True
+        )
 
 
 class TestDotenvForServer:

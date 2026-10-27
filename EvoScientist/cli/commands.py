@@ -892,6 +892,32 @@ def warn_server_backend_hitl_caveats(
     )
 
 
+def dangerous_flag_note(backend: str | None) -> str | None:
+    """Where this session's ``--dangerous`` applies, for a session whose turns
+    run on *backend*: the background server serves later sessions too, so it
+    does not get the flag. ``None`` without the flag."""
+    from ..langgraph_dev.manager import _set_by_flag
+
+    if not _set_by_flag("EVOSCIENTIST_DANGEROUS_MODE"):
+        return None
+    if backend == "langgraph_server":
+        return (
+            "--dangerous has no effect here: this session's turns run in the "
+            "background server, which follows dangerous_mode in config.yaml."
+        )
+    return (
+        "--dangerous applies to this session's own agent. The background "
+        "server's agents (async sub-agents, memory workers, the WebUI) follow "
+        "dangerous_mode in config.yaml."
+    )
+
+
+def _print_dangerous_flag_note(backend: str | None) -> None:
+    note = dangerous_flag_note(backend)
+    if note is not None:
+        console.print(f"[yellow]⚠ {escape(note)}[/yellow]")
+
+
 def _pending_skill_proposals_message(workspace_dir: str | Path) -> str | None:
     """Return a concise review reminder when autoskill proposals are waiting."""
     try:
@@ -2250,6 +2276,7 @@ def serve(
     from ..config import GatewaySurface, resolve_gateway_backend
 
     gateway_backend = resolve_gateway_backend(config, GatewaySurface.SERVE)
+    _print_dangerous_flag_note(gateway_backend)
 
     # Auto-start langgraph dev and register the CLI's project (after the
     # workspace is resolved).
@@ -3286,6 +3313,8 @@ def _main_callback(
                     "[dim]The WebUI works in the workspace root; --mode run "
                     "applies to the CLI and TUI.[/dim]"
                 )
+            # The WebUI's turns run in the background server.
+            _print_dangerous_flag_note("langgraph_server")
             run_webui(config, workspace_dir=str(workspace.root))
             return
         config.ui_backend = "cli"
@@ -3308,6 +3337,7 @@ def _main_callback(
     else:
         _gateway_surface = GatewaySurface.INTERACTIVE
     gateway_backend = resolve_gateway_backend(config, _gateway_surface)
+    _print_dangerous_flag_note(gateway_backend)
 
     # Auto-start langgraph dev and register the CLI's project (after the
     # workspace is resolved).

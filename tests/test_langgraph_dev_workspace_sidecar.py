@@ -776,3 +776,20 @@ def test_server_config_fingerprint_tracks_subagent_yaml_content(tmp_path, monkey
     base = manager._server_config_fingerprint(cfg)
     (fake_dir / "research.yaml").write_text("name: research\nprompt: v2\n")
     assert manager._server_config_fingerprint(cfg) != base
+
+
+def test_server_config_fingerprint_reads_flagged_field_from_file():
+    """A lasting server does not get this session's --dangerous: the session
+    sees no drift for it, and a change in config.yaml still is one."""
+    from EvoScientist.config import settings
+
+    plain = manager.EvoScientistConfig()
+    flagged = manager.EvoScientistConfig(dangerous_mode=True)
+    assert manager._server_config_fingerprint(flagged) != (
+        manager._server_config_fingerprint(plain)
+    )
+
+    settings.record_env_origin("EVOSCIENTIST_DANGEROUS_MODE", "cli")
+    assert manager._server_config_fingerprint(flagged) == (
+        manager._server_config_fingerprint(plain)
+    )

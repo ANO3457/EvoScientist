@@ -307,7 +307,7 @@ async def test_agent_shell_notices_are_shown_in_the_app(monkeypatch, workspace):
     from EvoScientist.cli import tui_interactive as tui_mod
 
     notice = "Run `EvoSci setup` [/x]"
-    monkeypatch.setattr(tui_mod, "_agent_shell_notices", lambda: [notice])
+    monkeypatch.setattr(tui_mod, "_agent_shell_notices", lambda *_a: [notice])
     app = await capture_app(monkeypatch, workspace)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()

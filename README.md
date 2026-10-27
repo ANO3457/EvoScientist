@@ -541,8 +541,8 @@ During a session you can also reply **3** (Approve all) at any approval prompt t
 > **Dangerous mode** lifts the workspace sandbox entirely — the agent can read, write, and delete files **anywhere on the real filesystem** (privileged commands like `sudo`/`rm -rf /` are still blocked). It implies `--auto-approve` (no prompts). Use only when you fully trust the task.
 >
 > ```bash
-> EvoSci --dangerous                       # per-session
-> EvoSci config set dangerous_mode true    # persistent
+> EvoSci --dangerous                       # this session's own agent
+> EvoSci config set dangerous_mode true    # persistent, the background server and WebUI too
 > ```
 
 </details>

@@ -117,10 +117,10 @@ def _shorten_path(path: str) -> str:
     return _sp(path)
 
 
-def _agent_shell_notices() -> list[str]:
+def _agent_shell_notices(backend: str | None = None) -> list[str]:
     """The agent shell's setup hint, the server drift warning, a server
-    unavailable for this project and one reachable from other machines, when
-    they apply.
+    unavailable for this project, one reachable from other machines and where
+    a ``--dangerous`` flag applies (for turns on *backend*), when they apply.
 
     They also go to the terminal or the log, which Textual hides while the
     app runs, so the TUI shows them as notifications.
@@ -132,7 +132,14 @@ def _agent_shell_notices() -> list[str]:
     unavailable = (
         lg_manager.SERVER_UNAVAILABLE_MESSAGE if lg_manager.SERVER_UNAVAILABLE else None
     )
-    notices = [setup_hint(), lg_manager.AGENT_SHELL_DRIFT, unavailable]
+    from .commands import dangerous_flag_note
+
+    notices = [
+        setup_hint(),
+        lg_manager.AGENT_SHELL_DRIFT,
+        unavailable,
+        dangerous_flag_note(backend),
+    ]
     exposure = exposure_messages(lg_manager.SERVER_EXPOSURE)
     return [n for n in notices if n is not None] + exposure
 
@@ -1191,7 +1198,7 @@ def run_textual_interactive(
         async def _check_agent_shell(self) -> None:
             """Notify the notices from :func:`_agent_shell_notices`."""
             try:
-                notices = await asyncio.to_thread(_agent_shell_notices)
+                notices = await asyncio.to_thread(_agent_shell_notices, gateway_backend)
                 for message in notices:
                     # Paths may contain "[", which markup would eat.
                     self.notify(message, severity="warning", timeout=20, markup=False)

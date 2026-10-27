@@ -533,6 +533,34 @@ def test_tui_notices_name_exposed_server(monkeypatch):
     assert set(expected) <= set(_agent_shell_notices())
 
 
+@pytest.mark.parametrize(
+    ("flagged", "backend", "says"),
+    [
+        (True, "local", "applies to this session's own agent"),
+        (True, "langgraph_server", "has no effect here"),
+        (False, "local", None),
+    ],
+)
+def test_dangerous_flag_note_says_where_it_applies(monkeypatch, flagged, backend, says):
+    """The background server's agents follow config.yaml; the TUI, whose
+    terminal is hidden, shows the note as well."""
+    from EvoScientist.cli import commands
+    from EvoScientist.cli.tui_interactive import _agent_shell_notices
+    from EvoScientist.config import settings
+
+    if flagged:
+        settings.record_env_origin("EVOSCIENTIST_DANGEROUS_MODE", "cli")
+
+    note = commands.dangerous_flag_note(backend)
+    notices = _agent_shell_notices(backend)
+
+    if says is None:
+        assert note is None
+    else:
+        assert says in note
+        assert note in notices
+
+
 def test_tui_notices_name_unavailable_server(monkeypatch):
     """The terminal is hidden while the TUI runs."""
     from EvoScientist.cli.tui_interactive import _agent_shell_notices

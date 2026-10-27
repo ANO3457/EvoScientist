@@ -87,6 +87,67 @@ def test_start_gives_server_no_dotenv_keys(monkeypatch, tmp_path, runtime_paths)
     assert "OPENAI_API_KEY" not in env
 
 
+@pytest.mark.parametrize(("lasting", "passed"), [(True, False), (False, True)])
+def test_session_flag_reaches_only_server_it_owns(
+    monkeypatch, tmp_path, runtime_paths, lasting, passed
+):
+    """A lasting server serves later sessions and every project: this
+    session's --dangerous (or --debug, --auth-mode) does not reach it. A
+    server EvoSci deploy or the desktop app owns gets its starter's flags."""
+    from EvoScientist.config import settings
+
+    monkeypatch.setenv("EVOSCIENTIST_DANGEROUS_MODE", "true")
+    settings.record_env_origin("EVOSCIENTIST_DANGEROUS_MODE", "cli")
+    captured = patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+    with pytest.raises(PopenAbort):
+        manager.start_langgraph_dev(workspace_dir=tmp_path, port=16192, lasting=lasting)
+
+    env = captured["env"]
+    origins = json.loads(env[settings.ENV_ORIGINS_VAR])
+    assert ("EVOSCIENTIST_DANGEROUS_MODE" in env) is passed
+    assert ("EVOSCIENTIST_DANGEROUS_MODE" in origins) is passed
+
+
+def test_auth_mode_flag_reaches_lasting_server(monkeypatch, tmp_path, runtime_paths):
+    """One server has one set of credentials: the session that starts it
+    picks them."""
+    from EvoScientist.config import settings
+
+    monkeypatch.setenv("EVOSCIENTIST_OPENAI_AUTH_MODE", "oauth")
+    settings.record_env_origin("EVOSCIENTIST_OPENAI_AUTH_MODE", "cli")
+    captured = patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+    with pytest.raises(PopenAbort):
+        manager.start_langgraph_dev(workspace_dir=tmp_path, port=16194)
+
+    assert captured["env"]["EVOSCIENTIST_OPENAI_AUTH_MODE"] == "oauth"
+
+
+@pytest.mark.parametrize(
+    ("export", "flag", "reaches"),
+    [("1", False, True), ("yes", False, True), (None, True, False)],
+)
+def test_dangerous_mode_reaching_lasting_server(
+    monkeypatch, tmp_path, runtime_paths, export, flag, reaches
+):
+    """Through the session's own config resolution: the user's export
+    reaches the server however it is spelled; a --dangerous flag does not."""
+    from EvoScientist.config import settings
+
+    monkeypatch.setattr(settings, "find_dotenv", lambda *a, **k: "")
+    if export is None:
+        monkeypatch.delenv("EVOSCIENTIST_DANGEROUS_MODE", raising=False)
+    else:
+        monkeypatch.setenv("EVOSCIENTIST_DANGEROUS_MODE", export)
+    config = settings.get_effective_config({"dangerous_mode": True} if flag else None)
+    assert config.dangerous_mode
+    settings.apply_config_to_env(config)
+    captured = patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
+    with pytest.raises(PopenAbort):
+        manager.start_langgraph_dev(workspace_dir=tmp_path, port=16193)
+
+    assert ("EVOSCIENTIST_DANGEROUS_MODE" in captured["env"]) is reaches
+
+
 def test_start_sets_the_browser_boundary(monkeypatch, tmp_path, runtime_paths):
     """Set on every start, so nothing inherited (a workspace ``.env``) widens
     it; cloudflared inherits the server's environment."""

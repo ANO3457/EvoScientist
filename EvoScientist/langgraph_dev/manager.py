@@ -38,6 +38,7 @@ from EvoScientist.config import (
     MemoryObservationTarget,
 )
 from EvoScientist.config.settings import (
+    _ENV_MAPPINGS,
     ENV_ORIGINS_VAR,
     _same_value,
     config_value_origin,
@@ -688,8 +689,10 @@ def _server_config_fingerprint(config: EvoScientistConfig) -> str:
     only feed a truncated one-way digest; nothing recoverable is stored.
     getattr with defaults: deploy/WebUI (and their tests) routinely hand
     this module duck-typed config objects missing dataclass fields.
-    :data:`_FINGERPRINT_FILE_FIELDS` come from ``config.yaml``, not from
-    ``config``, so every caller hashes what the server reads.
+    :data:`_FINGERPRINT_FILE_FIELDS`, and the fields a command-line flag of
+    this session set that a lasting server does not get, come from
+    ``config.yaml``, not from ``config``, so every caller hashes what the
+    server reads.
     """
     from EvoScientist.config.settings import load_config
 
@@ -699,7 +702,10 @@ def _server_config_fingerprint(config: EvoScientistConfig) -> str:
         name = field.name
         if is_client_only(name):
             continue
-        source = file_config if name in _FINGERPRINT_FILE_FIELDS else config
+        from_file = name in _FINGERPRINT_FILE_FIELDS or _withheld_flag(
+            _ENV_MAPPINGS.get(name, "")
+        )
+        source = file_config if from_file else config
         parts.append((name, str(getattr(source, name, None))))
     try:
         parts.append(("version", importlib.metadata.version("EvoScientist")))
@@ -864,15 +870,46 @@ def _from_dotenv(env_key: str) -> bool:
     return (env_origin(env_key) or {}).get("source") == "dotenv"
 
 
-def _server_env_origins(port: str, host: str) -> dict:
+def _set_by_flag(env_key: str) -> bool:
+    """Whether a command-line flag of this session set *env_key*. A lasting
+    server serves later sessions and every project, so it does not get it."""
+    return (env_origin(env_key) or {}).get("source") == "cli"
+
+
+# The flags a lasting server still takes from the session that starts it.
+# The auth mode picks the credentials its requests use, of which one server
+# has one set: the starter's choice stands, and a later session with another
+# one sees the drift warning. (With Anthropic OAuth, ccproxy's variables carry
+# the choice to the server either way.)
+_FLAGS_SERVER_TAKES = frozenset(
+    {"EVOSCIENTIST_OPENAI_AUTH_MODE", "EVOSCIENTIST_ANTHROPIC_AUTH_MODE"}
+)
+
+
+def _withheld_flag(env_key: str) -> bool:
+    """Whether *env_key* is a flag of this session that a lasting server
+    does not get."""
+    return _set_by_flag(env_key) and env_key not in _FLAGS_SERVER_TAKES
+
+
+def _passed_to_server(env_key: str, *, lasting: bool) -> bool:
+    """Whether the server gets this process's *env_key*: never a ``.env``
+    setting, and a withheld flag only when the server is this process's own."""
+    return not _from_dotenv(env_key) and not (lasting and _withheld_flag(env_key))
+
+
+def _server_env_origins(port: str, host: str, *, lasting: bool) -> dict:
     """This process's record of environment origins, plus the port and host
     :func:`start_langgraph_dev` always sets for the server.
 
     A variable passed on unchanged keeps what is recorded for it, or no record
-    for the user's own export; a ``.env`` setting is not passed.
+    for the user's own export; a variable the server does not get
+    (:func:`_passed_to_server`) is not recorded.
     """
     origins = {
-        key: origin for key, origin in env_origins().items() if not _from_dotenv(key)
+        key: origin
+        for key, origin in env_origins().items()
+        if _passed_to_server(key, lasting=lasting)
     }
     for env_key, field, value in (
         ("EVOSCIENTIST_LANGGRAPH_DEV_PORT", "langgraph_dev_port", port),
@@ -1062,10 +1099,17 @@ def start_langgraph_dev(
     # the user's ``default_workdir`` override (Docker sets it), which the
     # settings API reports. A project ``.env`` sets only this command's own
     # settings, each only where the environment had none, so the server gets
-    # the environment without them. It gets this process's data and config
-    # folders so both use the same files.
+    # the environment without them. A lasting server, which serves later
+    # sessions too, gets none of this session's flags (``--dangerous``,
+    # ``--debug``) but the auth mode: it follows config.yaml and the user's
+    # own environment. It gets this process's data and config folders so both use
+    # the same files.
     sub_env = paths.dir_env(
-        {key: value for key, value in os.environ.items() if not _from_dotenv(key)}
+        {
+            key: value
+            for key, value in os.environ.items()
+            if _passed_to_server(key, lasting=lasting)
+        }
     )
     sub_env.pop("EVOSCIENTIST_RUN_DIR", None)
     sub_env[paths.LAUNCHER_WORKSPACE_ENV] = os.path.abspath(workspace_dir)
@@ -1113,7 +1157,9 @@ def start_langgraph_dev(
     sub_env.pop("TUNNEL_HTTP_HOST_HEADER", None)
     # Where the server's config-mapped variables came from, for the settings
     # API's ``sources``: this process's record plus the two values set above.
-    sub_env[ENV_ORIGINS_VAR] = json.dumps(_server_env_origins(str(port), host))
+    sub_env[ENV_ORIGINS_VAR] = json.dumps(
+        _server_env_origins(str(port), host, lasting=lasting)
+    )
 
     # POSIX: own session so the child can be group-signalled on cleanup, and
     # outlives the terminal. Windows: own process group, so Ctrl+C in the

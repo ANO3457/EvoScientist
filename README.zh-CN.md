@@ -557,8 +557,8 @@ EvoSci config set shell_allow_list "python,pip,pytest,ruff,git"
 > **危险模式（Dangerous mode）** 会完全解除工作区沙箱——智能体可以读写、删除**真实文件系统上任意位置**的文件（`sudo`/`rm -rf /` 等高危命令仍被拦截）。它隐含 `--auto-approve`（不再提示审批）。请仅在你完全信任该任务时使用。
 >
 > ```bash
-> EvoSci --dangerous                       # 单次会话
-> EvoSci config set dangerous_mode true    # 持久化
+> EvoSci --dangerous                       # 仅本次会话自己的智能体
+> EvoSci config set dangerous_mode true    # 持久化，后台服务器和 WebUI 也生效
 > ```
 
 </details>
