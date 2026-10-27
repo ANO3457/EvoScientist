@@ -3,6 +3,8 @@ runs, and the registration of its project with the server it uses."""
 
 from __future__ import annotations
 
+import os
+
 import httpx
 import pytest
 
@@ -88,7 +90,8 @@ def test_prepare_workdir_without_registry_creates_folder(tmp_path):
 def test_is_known_project_reads_data_folder_with_uri_characters(monkeypatch, tmp_path):
     from EvoScientist.langgraph_dev.registry import Registry
 
-    monkeypatch.setattr(paths, "DATA_DIR", tmp_path / "r&d #2 ?100%")
+    name = "r&d #2 100%" if os.name == "nt" else "r&d #2 ?100%"
+    monkeypatch.setattr(paths, "DATA_DIR", tmp_path / name)
     gone = Workspace(tmp_path / "gone")
     Registry().set_registered(gone.key, True)
 

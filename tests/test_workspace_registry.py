@@ -462,10 +462,14 @@ def test_register_workspace_route_reports_failed_setup(
         ({"workspace_dir": "relative/ws"}, "invalid_path"),
         ({"workspace_dir": 123}, "invalid_path"),
         ({}, "invalid_path"),
-        ({"workspace_dir": "/nonexistent/evosci-project"}, "folder_missing"),
+        (None, "folder_missing"),
     ],
 )
-def test_register_workspace_route_refuses_bad_folder(server, secret, body, error):
+def test_register_workspace_route_refuses_bad_folder(
+    server, secret, body, error, tmp_path
+):
+    if body is None:
+        body = {"workspace_dir": str(tmp_path / "nonexistent")}
     response = server.post("/api/workspaces", json=body, headers=secret)
     assert response.status_code == 400
     assert response.json() == {"error": error}

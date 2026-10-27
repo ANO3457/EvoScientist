@@ -339,10 +339,12 @@ def test_get_teams_lists_named_project(launcher, tmp_path):
 
 @pytest.mark.parametrize(
     ("workspace_dir", "status", "error"),
-    [("relative/ws", 400, "invalid_path"), ("/nonexistent/evosci", 404, "not_served")],
+    [("relative/ws", 400, "invalid_path"), (None, 404, "not_served")],
 )
 @pytest.mark.usefixtures("launcher")
-def test_get_teams_refuses_unserved_project(workspace_dir, status, error):
+def test_get_teams_refuses_unserved_project(workspace_dir, status, error, tmp_path):
+    if workspace_dir is None:
+        workspace_dir = str(tmp_path / "nonexistent")
     resp = client.get("/api/teams", params={"workspace_dir": workspace_dir})
 
     assert resp.status_code == status

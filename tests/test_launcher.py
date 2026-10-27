@@ -381,7 +381,7 @@ def test_start_registers_workspace_before_front_end(monkeypatch):
 
     lm.WebUILauncher(object(), _cfg(), _RecordingRunner()).start()
 
-    assert events[0][:2] == ("register", Path("/tmp/wsA"))
+    assert events[0][:2] == ("register", Path("/tmp/wsA").resolve())
     assert events[1] == ("front end",)
 
 
@@ -727,7 +727,7 @@ def test_start_reuses_server_started_from_same_project(monkeypatch):
     launcher = lm.WebUILauncher(object(), _cfg(workspace_dir="/tmp/wsA"), _FakeRunner())
 
     assert not launcher.start().backend_started
-    assert registered == [Path("/tmp/wsA")]
+    assert registered == [Path("/tmp/wsA").resolve()]
 
 
 def test_start_warns_when_webui_port_occupied(monkeypatch):
