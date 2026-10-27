@@ -187,8 +187,8 @@ class _EvoFilteredGraph(CompiledStateGraph):
             yield _strip_private(snap)
 
 
-# The main agent works in the session's folder: a run for another workspace or
-# run folder is refused (see ``folder_check``).
+# The main agent works in the access's project and run folder: a run on a
+# thread bound to another one is refused (see ``folder_check``).
 EvoScientist_agent = served_graph(AGENT_NAME)
 
 

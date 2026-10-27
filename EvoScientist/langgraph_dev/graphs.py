@@ -3,12 +3,12 @@
 One module-level binding per graph registered in ``langgraph.json``; each is
 the factory langgraph-api calls on every access, which returns the graph
 built for the access's folders (see ``factories``). The builders live in
-``factories._build``.
+``factories.BUILDERS``.
 
 To add a new async sub-agent:
 
   1. Set ``async: true`` in ``EvoScientist/subagents/<name>.yaml``.
-  2. Add its builder to ``factories._build`` and a binding here::
+  2. Add its builder to ``factories.BUILDERS`` and a binding here::
 
          <snake_name> = served_graph("<name>")
 
@@ -16,7 +16,8 @@ To add a new async sub-agent:
 
          "<name>": "EvoScientist.langgraph_dev.graphs:<snake_name>"
 
-  4. If it works in the session's folder, add ``"<name>"`` to
+  4. If it works in a run's folder (a ``--mode=run`` session's), not only
+     in the project root, add ``"<name>"`` to
      ``EvoScientist.sessions.FOLDER_GRAPH_IDS``.
 
 The main agent's factory lives in ``main_graph.py`` next to its stream

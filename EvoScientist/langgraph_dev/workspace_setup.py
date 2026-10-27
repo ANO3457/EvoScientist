@@ -161,9 +161,12 @@ async def register_workspace(dirs: SessionDirs) -> None:
     :func:`registration_lock`.
 
     Clients register their project at every start, and every registration
-    restores its threads: the runtime's registry learns of the threads a CLI
-    session made only from a restore. Once restored in this server process,
-    a restore that fails again is logged by the restore, not raised.
+    runs the whole setup again, each step safe to repeat: it restores the
+    project's threads, since the runtime's registry learns of the threads a
+    CLI session made only from a restore, checks its assistants, imports what
+    its old store has left, reconciles its AutoSkills cron and starts
+    building its chat graph. Once restored in this server process, a restore
+    that fails again is logged by the restore, not raised.
 
     Raises :class:`FolderMissingError` when the project's folder does not
     exist, and ``RuntimeError`` when its threads cannot be restored or its

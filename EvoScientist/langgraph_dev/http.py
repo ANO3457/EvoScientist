@@ -2,8 +2,10 @@
 
 The langgraph-api host supports a top-level ``http`` key in
 ``langgraph.json`` that names an ASGI app to mount on the same
-process as the graph. We use it to surface the registry the WebUI's
-``/model`` picker needs.
+process as the graph. It hosts the project registry and registration
+(``/api/workspaces``), the settings and local-secret routes, the
+AutoSkills reconcile, and the model registry the WebUI's ``/model``
+picker needs.
 
 Why this lives here and not as a separate sidecar: the WebUI talks to
 ``EvoSci deploy``'s langgraph endpoint anyway, so one server keeps the

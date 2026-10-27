@@ -211,8 +211,8 @@ def process_workspace() -> Workspace:
     """The workspace of a process that was not given one explicitly.
 
     ``EVOSCIENTIST_WORKSPACE_DIR`` when set, otherwise the current directory.
-    Read once per process, so it does not change with the environment later
-    (a ``.env`` merge). The langgraph dev server has no workspace of its own:
+    Read once per process, so it does not change with the environment later.
+    The langgraph dev server has no workspace of its own:
     it serves every registered project (see :func:`launcher_workspace`).
     """
     return Workspace(_env_path("EVOSCIENTIST_WORKSPACE_DIR") or Path.cwd())
