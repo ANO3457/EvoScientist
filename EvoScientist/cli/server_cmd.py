@@ -244,10 +244,13 @@ def stop_server(*, keep_owned: bool = False, yes: bool = False) -> bool:
         ServerKeptError,
         configured_address,
         is_langgraph_dev_running,
+        owned_by_its_starter,
         stop_recorded_server,
     )
 
-    if not yes and not _stop_busy_server_anyway(get_effective_config()):
+    # A server service stop leaves running needs no question about its work.
+    kept = keep_owned and owned_by_its_starter()
+    if not yes and not kept and not _stop_busy_server_anyway(get_effective_config()):
         return True
     try:
         pid = stop_recorded_server(keep_owned=keep_owned)

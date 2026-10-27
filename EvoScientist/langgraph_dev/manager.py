@@ -756,6 +756,18 @@ class ServerKeptError(RuntimeError):
     or stopping it."""
 
 
+def owned_by_its_starter() -> bool:
+    """Whether the recorded server is a live one that ``EvoSci deploy`` or
+    the desktop app owns, not the background service: ``EvoSci service
+    stop`` leaves it running. A record of an older release does not say."""
+    sidecar = _read_workspace_sidecar()
+    return (
+        sidecar is not None
+        and sidecar.get("lasting") is False
+        and _langgraph_cmdline(sidecar.get("pid")) is not None
+    )
+
+
 def stop_recorded_server(*, keep_owned: bool = False) -> int | None:
     """Explicitly stop the langgraph dev recorded in our PID file.
 
@@ -776,15 +788,12 @@ def stop_recorded_server(*, keep_owned: bool = False) -> int | None:
     """
     try:
         with FileLock(str(RUNTIME.lock_file), timeout=_FILE_LOCK_TIMEOUT):
-            if keep_owned:
-                sidecar = _read_workspace_sidecar()
-                owned = sidecar is not None and sidecar.get("lasting") is False
-                if owned and _langgraph_cmdline(sidecar.get("pid")) is not None:
-                    raise ServerKeptError(
-                        "The running server is not the background service: an "
-                        "EvoSci deploy or the desktop app owns it, so it was left "
-                        "running (EvoSci server stop stops it anyway)."
-                    )
+            if keep_owned and owned_by_its_starter():
+                raise ServerKeptError(
+                    "The running server is not the background service: an "
+                    "EvoSci deploy or the desktop app owns it, so it was left "
+                    "running (EvoSci server stop stops it anyway)."
+                )
             return _stop_recorded_server_locked()
     except FileLockTimeout:
         if keep_owned:
