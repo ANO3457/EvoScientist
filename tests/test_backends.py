@@ -1,5 +1,6 @@
 """Tests for EvoScientist/backends.py — validate_command, path conversion, resolve_path."""
 
+import locale
 import re
 import shlex
 import subprocess
@@ -1658,11 +1659,13 @@ class TestExecuteStderr:
             "sys.stderr.buffer.write(bytes([101,114,114,141,33,10])); "
             'sys.exit(3)"'
         )
+        # The default shell decodes with subprocess's own default encoding.
+        encoding = "utf-8" if sys.flags.utf8_mode else locale.getencoding()
         assert resp.exit_code == 3
         lines = resp.output.splitlines()
         assert lines[0] == "before"
-        assert lines[1] == "caf\ufffd!"
-        assert "[stderr] err\ufffd!" in lines
+        assert lines[1] == b"caf\x81!".decode(encoding, "replace")
+        assert "[stderr] " + b"err\x8d!".decode(encoding, "replace") in lines
         assert lines[-1] == "Exit code: 3"
 
     def test_execute_success_no_exit_code(self, tmp_workspace):
