@@ -623,6 +623,35 @@ def test_lost_ccproxy_start_race_is_not_recorded(monkeypatch, tmp_path):
     assert not (tmp_path / "ccproxy.pid").exists()
 
 
+def test_interrupted_ccproxy_start_leaves_record(monkeypatch, tmp_path):
+    """A Ctrl+C while the start checks the new ccproxy still leaves it
+    recorded, so EvoSci ccproxy stop can stop it."""
+    from types import SimpleNamespace
+
+    import EvoScientist.ccproxy_manager as ccproxy_mod
+
+    monkeypatch.setattr(paths, "SERVER_HOME", tmp_path)
+
+    class _Started:
+        pid = 5
+
+        def wait(self, timeout=None):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(ccproxy_mod, "is_ccproxy_available", lambda: True)
+    monkeypatch.setattr(ccproxy_mod, "check_ccproxy_auth", lambda _p: (True, ""))
+    monkeypatch.setattr(
+        ccproxy_mod, "ensure_ccproxy", lambda port, *, detached: _Started()
+    )
+    monkeypatch.setattr(ccproxy_mod, "setup_ccproxy_env", lambda port: None)
+    config = SimpleNamespace(anthropic_auth_mode="oauth", ccproxy_port=8000)
+
+    with pytest.raises(KeyboardInterrupt):
+        ccproxy_mod.maybe_start_ccproxy(config, lasting=True)
+
+    assert ccproxy_mod.recorded_ccproxy_pid() == 5
+
+
 def test_ccproxy_start_failure_keeps_install_hint(monkeypatch):
     """The hint's ``[oauth]`` extra is text, not markup."""
     import EvoScientist.ccproxy_manager as ccproxy_mod

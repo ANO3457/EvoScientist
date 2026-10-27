@@ -354,6 +354,12 @@ def maybe_start_ccproxy(
         try:
             with _lasting_start_lock():
                 proc = ensure_ccproxy(port, detached=True)
+                if proc is not None:
+                    # Recorded at once, under the lock: an interrupt during
+                    # the check below leaves a ccproxy that a stop finds.
+                    _record_lasting(proc.pid)
+                    if not _still_running(proc):
+                        _forget_lasting(proc.pid)
         except OSError as exc:
             # The lock timing out, too: a filelock Timeout is an OSError.
             raise RuntimeError(f"Could not start ccproxy: {exc}") from exc
@@ -365,11 +371,7 @@ def maybe_start_ccproxy(
         logger.info("Started ccproxy on port %d", port)
     else:
         logger.info("Reusing existing ccproxy on port %d", port)
-    if not lasting:
-        return proc
-    if proc is not None and _still_running(proc):
-        _record_lasting(proc.pid)
-    return None
+    return None if lasting else proc
 
 
 def _still_running(proc: subprocess.Popen) -> bool:
@@ -413,6 +415,16 @@ def _record_lasting(pid: int) -> None:
         _lasting_record().write_text(str(pid))
     except OSError:
         logger.warning("Could not record the ccproxy pid", exc_info=True)
+
+
+def _forget_lasting(pid: int) -> None:
+    """Remove the record of *pid*, when it is still the one recorded."""
+    if recorded_ccproxy_pid() != pid:
+        return
+    try:
+        _lasting_record().unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Could not remove the ccproxy pid record", exc_info=True)
 
 
 def uses_oauth(config: object) -> bool:
