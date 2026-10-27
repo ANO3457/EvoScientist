@@ -97,8 +97,9 @@ async def drop_system_cron(cron_id: str, workspace: Workspace) -> None:
     into its missing folder; its reconcile recreates it.
 
     User crons are left as they are: each fire is refused until the folder is
-    back, and leaves nothing in the store (they run on threads of their own,
-    deleted after the run).
+    back. A task that deletes its run's thread leaves nothing in the store; one
+    that keeps it (``on_run_completed="keep"``, as the WebUI creates them)
+    leaves that thread and its failed run, until the server restarts.
     """
     from langgraph_runtime.database import connect
     from langgraph_runtime.ops import Crons

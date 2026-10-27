@@ -1483,8 +1483,9 @@ def get_effective_config(
         2. Environment variables (``_ENV_MAPPINGS``)
         3. ``.env`` file at (or above) the current working directory, for
            a few settings of the EvoSci command itself only
-           (:data:`DOTENV_FIELDS`); any other key in it is ignored with a
-           warning, and the langgraph dev server reads none
+           (:data:`DOTENV_FIELDS`); any other key in it is ignored, one
+           EvoScientist reads with a warning, and the langgraph dev server
+           reads none
         4. Config file (``~/.config/evoscientist/config.yaml``)
         5. Dataclass defaults
 

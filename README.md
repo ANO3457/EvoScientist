@@ -433,7 +433,7 @@ export TAVILY_API_KEY="tvly-..."    # app.tavily.com
 
 Or use `EvoSci config set` to persist keys in `~/.config/evoscientist/config.yaml`.
 
-Every agent takes its keys from `config.yaml` or the environment. A project `.env` holds only settings of the `EvoSci` command started in that folder, such as `EVOSCIENTIST_DEFAULT_MODE` or `EVOSCIENTIST_UI_BACKEND`; `EvoSci` warns about, and ignores, any key or other setting in it.
+Every agent takes its keys from `config.yaml` or the environment. A project `.env` holds only settings of the `EvoSci` command started in that folder, such as `EVOSCIENTIST_DEFAULT_MODE` or `EVOSCIENTIST_UI_BACKEND`; `EvoSci` warns about, and ignores, any key or other setting EvoScientist reads in it. Other variables in it, such as `HF_TOKEN`, are ignored too: export them in your shell before starting EvoSci (the background server keeps the environment it started with).
 
 </details>
 
@@ -480,7 +480,7 @@ EvoSci -p "query" --rubric @criteria.md --auto-mode  # grade the work against a 
 <details>
 <summary>Desktop WebUI</summary>
 
-Set the UI backend to `webui` and a fresh `EvoSci` session launches a deploy-style LangGraph server **and** the [`@evoscientist/webui`](https://www.npmjs.com/package/@evoscientist/webui) front-end in one terminal — no second process to manage:
+Set the UI backend to `webui` and a fresh `EvoSci` session launches a deploy-style LangGraph server **and** the [`@evoscientist/webui`](https://www.npmjs.com/package/@evoscientist/webui) front-end in one terminal. The server keeps running after the WebUI closes, for every EvoSci session, until `EvoSci service stop`; `EvoSci --ui webui` opens only the project that server was started from, so stop it first to open another:
 
 ```bash
 EvoSci config set ui_backend webui   # persist; or one-off with `EvoSci --ui webui`
@@ -493,7 +493,7 @@ Requires **Node.js 20.9 or newer** (`EvoSci setup` installs Node.js 24 LTS when 
 **Opening it from another machine.** Both servers bind loopback (`127.0.0.1`) by default, so the WebUI is local-only out of the box. To use it over the LAN, widen both — the UI connects to the backend **from the browser**, so also point the UI's deployment URL at `http://<this-machine-ip>:6174` rather than leaving it on localhost:
 
 ```bash
-EvoSci --host 0.0.0.0                          # this session only, both servers
+EvoSci --host 0.0.0.0                          # both servers; a running backend keeps its own bind until EvoSci server stop
 EvoSci config set webui_host 0.0.0.0           # persist, front-end (port 4716)
 EvoSci config set langgraph_dev_host 0.0.0.0   # persist, backend (port 6174)
 ```
@@ -508,7 +508,7 @@ EvoSci config set langgraph_dev_host 0.0.0.0   # persist, backend (port 6174)
 >
 > On an untrusted network, leave the backend on loopback and reach it over SSH instead: `ssh -L 6174:localhost:6174 -L 4716:localhost:4716 <host>`.
 
-**Pages from other origins.** In every mode, `EvoSci deploy` included, the backend answers browser requests only from pages on this machine (any port) and on the machine's own addresses when it listens on the network. Other pages get `403`, shown in the browser as a CORS or network error and logged by the backend; under `--tunnel` this includes pages that call the public URL. To use the backend from another page, such as LangSmith Studio, add its origin and restart the backend:
+**Pages from other origins.** In every mode, `EvoSci deploy` included, the backend answers browser requests only from pages on this machine (any port) and on the machine's own addresses when it listens on the network. Other pages get `403`, shown in the browser as a CORS or network error and logged by the backend; under `--tunnel` this includes pages that call the public URL. To use the backend from another page, such as LangSmith Studio, add its origin and restart the backend (`EvoSci server stop`; the next session starts it again):
 
 ```bash
 EvoSci config set backend_allowed_origins https://smith.langchain.com

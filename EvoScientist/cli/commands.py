@@ -2499,8 +2499,8 @@ def serve(
         signal.signal(signal.SIGINT, _orig_sigint)
         signal.signal(signal.SIGTERM, _orig_sigterm)
         console.print("\n[dim]Shutting down...[/dim]")
-        # Before the atexit hook stops the dev server serve started: without
-        # serve nothing can be delivered, so the cron would only cost calls.
+        # The server outlives serve: without serve nothing can be delivered,
+        # so the cron would only cost calls.
         _serve_proactive_call(proactive.stop)
         _channels_stop(runtime=channel_runtime)
         console.print("[dim]Stopped.[/dim]")
