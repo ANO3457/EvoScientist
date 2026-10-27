@@ -71,8 +71,7 @@ launch_check() {
     kill -TERM "$pid" 2>/dev/null || true
     # Let the session finish exiting, so it starts no server after the
     # cleanup below has stopped it.
-    local waited
-    for waited in $(seq 1 30); do
+    for _ in $(seq 1 30); do
       kill -0 "$pid" 2>/dev/null || break
       sleep 1
     done
