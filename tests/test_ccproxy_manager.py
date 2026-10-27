@@ -456,13 +456,114 @@ def test_maybe_start_ccproxy_lasting_is_recorded_not_returned(monkeypatch, tmp_p
 
 def test_stop_recorded_ccproxy_leaves_other_process(monkeypatch, tmp_path):
     """A recorded pid reused by another program is not stopped."""
-    import os
+    import psutil
+
+    import EvoScientist.ccproxy_manager as ccproxy_mod
+    from EvoScientist import paths
+
+    class _OtherProgram:
+        pid = 4242
+
+        def cmdline(self):
+            return ["python", "-c", "import time; time.sleep(60)"]
+
+        def terminate(self):
+            raise AssertionError("another program was stopped")
+
+        kill = terminate
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: _OtherProgram())
+    monkeypatch.setattr(paths, "SERVER_HOME", tmp_path)
+    (tmp_path / "ccproxy.pid").write_text("4242")
+
+    assert ccproxy_mod.stop_recorded_ccproxy() is None
+    assert not (tmp_path / "ccproxy.pid").exists()
+
+
+def test_lasting_starts_at_once_spawn_one_ccproxy(monkeypatch, tmp_path):
+    """The second session finds the first one's ccproxy and records nothing."""
+    import subprocess
+    import threading
+    import time
+    from types import SimpleNamespace
 
     import EvoScientist.ccproxy_manager as ccproxy_mod
     from EvoScientist import paths
 
     monkeypatch.setattr(paths, "SERVER_HOME", tmp_path)
-    (tmp_path / "ccproxy.pid").write_text(str(os.getpid()))
+    healthy = threading.Event()
+    spawned: list = []
 
-    assert ccproxy_mod.stop_recorded_ccproxy() is None
-    assert not (tmp_path / "ccproxy.pid").exists()
+    class _Running:
+        pid = 77
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("ccproxy", timeout)
+
+    def start(port, *, detached):
+        spawned.append(port)
+        time.sleep(0.3)
+        healthy.set()
+        return _Running()
+
+    monkeypatch.setattr(ccproxy_mod, "is_ccproxy_available", lambda: True)
+    monkeypatch.setattr(ccproxy_mod, "check_ccproxy_auth", lambda _p: (True, ""))
+    monkeypatch.setattr(
+        ccproxy_mod, "is_ccproxy_running", lambda port: healthy.is_set()
+    )
+    monkeypatch.setattr(ccproxy_mod, "start_ccproxy", start)
+    monkeypatch.setattr(ccproxy_mod, "setup_ccproxy_env", lambda port: None)
+    config = SimpleNamespace(anthropic_auth_mode="oauth", ccproxy_port=8000)
+    sessions = [
+        threading.Thread(
+            target=ccproxy_mod.maybe_start_ccproxy,
+            args=(config,),
+            kwargs={"lasting": True},
+        )
+        for _ in range(2)
+    ]
+    for session in sessions:
+        session.start()
+    for session in sessions:
+        session.join()
+
+    assert spawned == [8000]
+    assert (tmp_path / "ccproxy.pid").read_text() == "77"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX modes")
+def test_lasting_ccproxy_creates_private_server_home(monkeypatch, tmp_path):
+    """Created first by a ccproxy start, the server home is this user's only,
+    as the server creates it."""
+    import EvoScientist.ccproxy_manager as ccproxy_mod
+    from EvoScientist import paths
+
+    monkeypatch.setattr(paths, "SERVER_HOME", tmp_path / "server")
+    with ccproxy_mod._lasting_start_lock():
+        pass
+
+    assert (tmp_path / "server").stat().st_mode & 0o777 == 0o700
+
+
+def test_lasting_start_that_cannot_lock_is_runtime_error(monkeypatch):
+    """Callers report a RuntimeError; a lock timeout is an OSError."""
+    from types import SimpleNamespace
+
+    from filelock import Timeout
+
+    import EvoScientist.ccproxy_manager as ccproxy_mod
+
+    class _Stuck:
+        def __enter__(self):
+            raise Timeout("ccproxy.lock")
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(ccproxy_mod, "is_ccproxy_available", lambda: True)
+    monkeypatch.setattr(ccproxy_mod, "check_ccproxy_auth", lambda _p: (True, ""))
+    monkeypatch.setattr(ccproxy_mod, "_lasting_start_lock", _Stuck)
+    config = SimpleNamespace(anthropic_auth_mode="oauth", ccproxy_port=8000)
+
+    with pytest.raises(RuntimeError, match="Could not start ccproxy"):
+        ccproxy_mod.maybe_start_ccproxy(config, lasting=True)

@@ -346,7 +346,15 @@ def maybe_start_ccproxy(
     if not (1 <= port <= 65535):
         raise ValueError(f"Invalid ccproxy port: {port}. Must be between 1 and 65535.")
 
-    proc = ensure_ccproxy(port, detached=lasting)
+    if lasting:
+        try:
+            with _lasting_start_lock():
+                proc = ensure_ccproxy(port, detached=True)
+        except OSError as exc:
+            # The lock timing out, too: a filelock Timeout is an OSError.
+            raise RuntimeError(f"Could not start ccproxy: {exc}") from exc
+    else:
+        proc = ensure_ccproxy(port, detached=False)
     setup_ccproxy_env(port)
 
     if proc:
@@ -377,11 +385,28 @@ def _lasting_record() -> Path:
     return paths.SERVER_HOME / "ccproxy.pid"
 
 
+def _lasting_start_lock():
+    """Held across the check for a running ccproxy and the start of a lasting
+    one: two sessions starting together would each spawn one, and the loser
+    can pass its health probe through the winner's port, then die on its bind
+    after being recorded."""
+    from filelock import FileLock
+
+    from .langgraph_dev.server_home import ensure_server_home
+
+    return FileLock(
+        str(ensure_server_home() / "ccproxy.lock"),
+        timeout=_CCPROXY_HEALTH_TIMEOUT_SECONDS + 10,
+    )
+
+
 def _record_lasting(pid: int) -> None:
+    from .langgraph_dev.server_home import ensure_server_home
+
     try:
-        record = _lasting_record()
-        record.parent.mkdir(parents=True, exist_ok=True)
-        record.write_text(str(pid))
+        # Created as the server creates it: readable by this user only.
+        ensure_server_home()
+        _lasting_record().write_text(str(pid))
     except OSError:
         logger.warning("Could not record the ccproxy pid", exc_info=True)
 
