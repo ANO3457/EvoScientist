@@ -78,7 +78,8 @@ def test_resolve_backend_other_project_is_mismatch(monkeypatch):
         lm._resolve_backend(_cfg(workspace_dir="/tmp/wsA"), object())
     assert ei.value.code == "workspace_mismatch"
     assert ei.value.fields == {"workspace": "/tmp/wsB"}
-    assert "server stop" not in ei.value.detail
+    # The way out, next to what it costs the other sessions.
+    assert "EvoSci server stop" in ei.value.detail
 
 
 def test_resolve_backend_older_run_folder_record_reuses(monkeypatch):

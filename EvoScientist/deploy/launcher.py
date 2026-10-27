@@ -829,9 +829,9 @@ def _resolve_backend(
             f"Port {cfg.backend_port} is serving the backend started from "
             f"{sidecar['workspace']}, and this front-end shows the project of "
             "the client that started the backend.",
-            f"Launch from that folder (--workdir {sidecar['workspace']}). "
-            "Stopping the backend ends the background work of every EvoSci "
-            "session using it.",
+            f"Launch from that folder (--workdir {sidecar['workspace']}), or "
+            "stop the backend with `EvoSci server stop` and launch again; that "
+            "ends the background work of every EvoSci session using it.",
             fields={"workspace": sidecar["workspace"]},
         )
     recorded_fp = sidecar.get("config_fingerprint")
