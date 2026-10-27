@@ -537,7 +537,7 @@ def test_tui_notices_name_exposed_server(monkeypatch):
     ("flagged", "backend", "says"),
     [
         (True, "local", "applies to this session's own agent"),
-        (True, "langgraph_server", "has no effect here"),
+        (True, "langgraph_server", "only turns approvals off"),
         (False, "local", None),
     ],
 )
@@ -559,6 +559,16 @@ def test_dangerous_flag_note_says_where_it_applies(monkeypatch, flagged, backend
     else:
         assert says in note
         assert note in notices
+
+
+def test_dangerous_flag_note_for_webui():
+    """The WebUI's runs carry none of this session's approval settings."""
+    from EvoScientist.cli import commands
+    from EvoScientist.config import settings
+
+    settings.record_env_origin("EVOSCIENTIST_DANGEROUS_MODE", "cli")
+    note = commands.dangerous_flag_note("langgraph_server", webui=True)
+    assert "has no effect here" in note
 
 
 def test_tui_notices_name_config_drift(monkeypatch):

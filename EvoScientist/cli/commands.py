@@ -901,18 +901,27 @@ def warn_server_backend_hitl_caveats(
     )
 
 
-def dangerous_flag_note(backend: str | None) -> str | None:
+def dangerous_flag_note(backend: str | None, *, webui: bool = False) -> str | None:
     """Where this session's ``--dangerous`` applies, for a session whose turns
-    run on *backend*: the background server serves later sessions too, so it
-    does not get the flag. ``None`` without the flag."""
+    run on *backend*, or for the WebUI's: the background server serves later
+    sessions too, so it does not get the flag. ``None`` without the flag."""
     from ..langgraph_dev.manager import _set_by_flag
 
     if not _set_by_flag("EVOSCIENTIST_DANGEROUS_MODE"):
         return None
-    if backend == "langgraph_server":
+    if webui:
         return (
-            "--dangerous has no effect here: this session's turns run in the "
+            "--dangerous has no effect here: the WebUI's turns run in the "
             "background server, which follows dangerous_mode in config.yaml."
+        )
+    if backend == "langgraph_server":
+        # The flag implies auto_approve, which this session's runs carry.
+        return (
+            "--dangerous does not reach the background server, which runs this "
+            "session's turns and keeps its own dangerous_mode. There the flag "
+            "only turns approvals off, as --auto-approve does, so while that "
+            "server's dangerous_mode is off a command EvoSci flags as dangerous "
+            "is refused instead of asked about."
         )
     return (
         "--dangerous applies to this session's own agent. The background "
@@ -921,8 +930,8 @@ def dangerous_flag_note(backend: str | None) -> str | None:
     )
 
 
-def _print_dangerous_flag_note(backend: str | None) -> None:
-    note = dangerous_flag_note(backend)
+def _print_dangerous_flag_note(backend: str | None, *, webui: bool = False) -> None:
+    note = dangerous_flag_note(backend, webui=webui)
     if note is not None:
         console.print(f"[yellow]⚠ {escape(note)}[/yellow]")
 
@@ -3342,7 +3351,7 @@ def _main_callback(
                     "applies to the CLI and TUI.[/dim]"
                 )
             # The WebUI's turns run in the background server.
-            _print_dangerous_flag_note("langgraph_server")
+            _print_dangerous_flag_note("langgraph_server", webui=True)
             run_webui(config, workspace_dir=str(workspace.root))
             return
         config.ui_backend = "cli"

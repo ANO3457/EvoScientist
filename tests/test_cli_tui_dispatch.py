@@ -311,3 +311,26 @@ def test_cmd_interactive_dispatches_to_textual(monkeypatch, workspace):
     assert kwargs["channel_send_thinking"] is True
     assert callable(kwargs["load_agent"])
     assert callable(kwargs["create_run_dir"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "noted_for"),
+    [([], ("langgraph_server", True)), (["--resume", "abc123"], ("local", False))],
+    ids=["webui", "terminal"],
+)
+def test_main_callback_says_where_dangerous_applies(monkeypatch, argv, noted_for):
+    """The WebUI's turns run in the background server; the terminal's on the
+    session's own gateway."""
+    import EvoScientist.cli.commands as cmds
+
+    noted: list = []
+    monkeypatch.setattr(
+        cmds,
+        "_print_dangerous_flag_note",
+        lambda backend, *, webui=False: noted.append((backend, webui)),
+    )
+
+    _calls, result = _invoke_main(monkeypatch, argv)
+
+    assert result.exit_code == 0
+    assert noted == [noted_for]
