@@ -858,7 +858,7 @@ def _get_default_backend(
         MemoryFilesystemBackend,
         MergedSkillsBackend,
     )
-    from .setup.research_env import research_env_overrides
+    from .setup.agent_env import agent_shell_overrides
 
     cfg = _ensure_config()
     if guard_dangerous is None:
@@ -879,7 +879,7 @@ def _get_default_backend(
         dangerous=cfg.dangerous_mode,
         guard_dangerous=guard_dangerous,
         refuse_delete=refuse_delete,
-        env=research_env_overrides(),
+        env=agent_shell_overrides(),
         skills_dir=workspace.skills_dir,
         media_dir=media_dir,
     )
@@ -1396,7 +1396,7 @@ def create_cli_agent(
         MemoryFilesystemBackend,
         MergedSkillsBackend,
     )
-    from .setup.research_env import research_env_overrides
+    from .setup.agent_env import agent_shell_overrides
 
     # Pure path only when BOTH config and chat_model are explicit: build from
     # locals and write no module globals. Otherwise keep the legacy
@@ -1434,7 +1434,7 @@ def create_cli_agent(
         # Guard derived per call from the run's HITL-suppression state (see
         # CustomSandboxBackend._effective_guard_dangerous), not baked here.
         guard_dangerous=False,
-        env=research_env_overrides(),
+        env=agent_shell_overrides(),
         skills_dir=workspace.skills_dir,
         media_dir=media_dir,
     )
