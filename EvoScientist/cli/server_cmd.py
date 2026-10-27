@@ -261,7 +261,8 @@ def stop_server(*, keep_owned: bool = False, yes: bool = False) -> bool:
         return False
     config = get_effective_config()
     port, host = configured_address(config)
-    if is_langgraph_dev_running(port=port, host=host):
+    left_running = is_langgraph_dev_running(port=port, host=host)
+    if left_running:
         # A server without ownership records (crashed session, deleted state
         # files) can't be verified as ours — refuse to guess, hand the user
         # the manual path instead of a silent no-op.
@@ -279,4 +280,4 @@ def stop_server(*, keep_owned: bool = False, yes: bool = False) -> bool:
             "[dim]No EvoSci-owned langgraph dev server to stop "
             "(stale state, if any, was cleaned up).[/dim]"
         )
-    return False
+    return left_running

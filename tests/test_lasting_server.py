@@ -392,6 +392,28 @@ def test_service_stop_leaves_deploy_owned_server(monkeypatch, tmp_path, ccproxy_
     assert ("EvoSci ccproxy stop" in output) is (ccproxy_pid is not None)
 
 
+def test_service_stop_leaves_ccproxy_for_unrecorded_server(monkeypatch):
+    """A server with no ownership record is not touched; it may route through
+    the service's ccproxy."""
+    import EvoScientist.ccproxy_manager as ccproxy_mod
+    from EvoScientist.deploy import busy
+
+    stopped = []
+    monkeypatch.setattr(manager, "stop_recorded_server", lambda **_k: None)
+    monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_k: True)
+    monkeypatch.setattr(busy, "backend_has_active_runs", lambda url: False)
+    monkeypatch.setattr(ccproxy_mod, "recorded_ccproxy_running", lambda: 7)
+    monkeypatch.setattr(
+        ccproxy_mod, "stop_recorded_ccproxy", lambda: stopped.append("ccproxy") or 7
+    )
+
+    result = CliRunner().invoke(app, ["service", "stop"])
+
+    assert result.exit_code == 0, result.output
+    assert stopped == []
+    assert "EvoSci ccproxy stop" in " ".join(result.output.split())
+
+
 def test_server_stop_stops_deploy_owned_server(monkeypatch, tmp_path):
     """EvoSci server stop is the explicit way to stop any recorded server."""
     stopped = []
