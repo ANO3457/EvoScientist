@@ -166,9 +166,11 @@ def _server_instance(url: str) -> str | None:
 
 def _post_with_secret(url: str, path: str, body: dict, *, what: str) -> httpx.Response:
     """POST *body* to the server at *url* with the local secret, once it
-    shows it holds the same one (its ``instance``): another user's server on
-    the port never gets it. ``OlderServerError`` for a server too old to have
-    an instance; ``RegistrationError`` when the request cannot be made."""
+    answers with the same ``instance``: a different server on the port (another
+    user's, another data folder's) does not get it. The instance is public, so
+    this catches a mix-up, not a process that copied it. ``OlderServerError``
+    for a server too old to have an instance; ``RegistrationError`` when the
+    request cannot be made."""
     from .. import paths
     from ..local_secret import HEADER, instance_of, read_local_secret
     from .sdk import LANGGRAPH_DEV_AUTH_HEADERS
@@ -312,8 +314,9 @@ def register_folder(workspace: Workspace, *, url: str) -> ServerExposure:
     langgraph dev server at *url*; how that server, which now serves it, can
     be reached from other machines.
 
-    The local secret goes only to a server that shows it holds the same one
-    (its ``instance``): another user's server on the port never gets it.
+    The local secret goes only to a server that answers with the same
+    ``instance``, so a different server on the port does not get it (see
+    :func:`_post_with_secret`).
 
     Raises :class:`OlderServerError` for a server without the registry,
     :class:`ProjectFolderMissingError` when the server finds the folder

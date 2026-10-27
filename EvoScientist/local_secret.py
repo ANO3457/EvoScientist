@@ -73,8 +73,10 @@ def instance_id() -> str | None:
     The first 16 hex characters of ``sha256(INSTANCE_PREFIX + secret)``. A
     client that reads the secret file computes the same value, so it can tell
     whether a server it reaches over HTTP is the one it sends writes to,
-    without the secret leaving the machine. The WebUI derives it with the
-    same bytes; keep them in step.
+    without the secret leaving the machine. The value is public (``GET
+    /api/instance`` answers without the secret): it tells a different server
+    apart, not one that copies it. The WebUI derives it with the same bytes;
+    keep them in step.
     """
     if _value is None:
         return None

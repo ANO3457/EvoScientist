@@ -516,8 +516,9 @@ async def post_settings_test_key(request: Request) -> JSONResponse:
 
 async def get_instance(_request: Request) -> JSONResponse:
     """The public name of this server's local secret
-    (:func:`~EvoScientist.local_secret.instance_id`), so a client can check
-    the server holds its secret before sending it."""
+    (:func:`~EvoScientist.local_secret.instance_id`), so a client can tell a
+    different server on the port before sending its secret. Public, it does
+    not prove the server holds the secret."""
     return JSONResponse({"instance": instance_id()})
 
 
