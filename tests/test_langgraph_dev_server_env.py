@@ -63,7 +63,7 @@ def test_start_refuses_when_another_server_holds_data_folder(
 
     patch_start_prereqs(monkeypatch, tmp_path, runtime_paths)
     monkeypatch.setattr(server_home, "server_running", lambda wait=0: True)
-    with pytest.raises(RuntimeError, match="already uses the data folder"):
+    with pytest.raises(RuntimeError, match="EvoSci server stop"):
         manager.start_langgraph_dev(workspace_dir=tmp_path, port=16178)
 
 

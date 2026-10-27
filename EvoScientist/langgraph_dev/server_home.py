@@ -37,8 +37,9 @@ class ServerRunningError(RuntimeError):
 def running_server_message() -> str:
     return (
         f"Another EvoScientist server already uses the data folder "
-        f"{paths.DATA_DIR}. Stop it first: two servers on one data folder "
-        "would both run its scheduled tasks."
+        f"{paths.DATA_DIR}, perhaps on the port you used before changing it. "
+        "Stop it first with `EvoSci server stop`: two servers on one data "
+        "folder would both run its scheduled tasks."
     )
 
 
