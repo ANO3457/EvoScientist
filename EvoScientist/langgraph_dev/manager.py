@@ -1351,8 +1351,8 @@ def ensure_langgraph_dev(
     A server already running on the configured port is reused; otherwise one
     is started, which outlives this process for every session to share until
     ``EvoSci server stop``. Either way the server
-    then registers *workspace_dir*, after the locks are released (the first
-    registration of a project restores its threads).
+    then registers *workspace_dir*, after the locks are released (a
+    registration restores the project's threads).
 
     Returns whether the session has the server it needs: True when it serves
     *workspace_dir* (or, without one, runs), or when no server is needed.

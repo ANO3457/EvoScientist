@@ -3,7 +3,7 @@ langgraph dev server.
 
 Mirrors ``CompactingWidget`` — a timer-backed status line that ticks elapsed
 seconds so the user has live feedback while the server starts, when it was
-not running, and registers the project (a first registration restores its
+not running, and registers the project (the registration restores its
 threads).
 """
 

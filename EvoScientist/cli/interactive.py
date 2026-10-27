@@ -902,7 +902,7 @@ def cmd_interactive(
                 if dirs is not None:
                     # Register the resumed project with the background agent
                     # server so background workers and deployed sub-agents
-                    # work there. A first registration restores the project's
+                    # work there. The registration restores the project's
                     # threads, behind a spinner, in a worker thread so the
                     # event loop keeps serving channel polls / MCP heartbeats.
                     # State changes only after it, so a ServerUnusableError leaves

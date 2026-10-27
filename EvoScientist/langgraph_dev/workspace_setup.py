@@ -5,7 +5,8 @@ threads are restored and its assistants created, and only then is it
 recorded as registered, which is what the factories serve while its folder
 exists; what its old runtime store has left is then imported, and its AutoSkills
 cron reconciled with the configuration.
-Every step can run again; the restore runs once per project and server process.
+Every step can run again; each registration restores the project's threads
+again, which adds the threads its CLI sessions made since.
 The server's start sets every registered project up again: a fresh runtime store
 has none of their assistants. Graphs are built when first needed; the chat
 graph, which reads use, starts building in the background. Setup runs inside
@@ -48,10 +49,18 @@ def registration_lock() -> asyncio.Lock:
     return _lock
 
 
-async def _set_up(workspace: Workspace, *, restore: bool) -> None:
+async def _set_up(
+    workspace: Workspace, *, restore: bool, restored_before: bool = False
+) -> None:
     if not await asyncio.to_thread(workspace.root.is_dir):
         raise FolderMissingError(f"The folder {workspace.root} does not exist.")
-    if restore and not await restore_workspace_threads(workspace.key):
+    # A project restored before in this process keeps its threads and its
+    # registration when this restore fails; the restore logs it.
+    if (
+        restore
+        and not await restore_workspace_threads(workspace.key)
+        and not restored_before
+    ):
         raise RuntimeError(f"Could not restore the threads of {workspace.root}.")
     try:
         await assistants.ensure_workspace_assistants(workspace)
@@ -151,17 +160,17 @@ async def register_workspace(dirs: SessionDirs) -> None:
     """Set *dirs*' project up and record it as registered; the caller holds
     :func:`registration_lock`.
 
-    A project's threads are restored once per server process, at its start
-    or at the project's first registration, so registering it again only
-    checks its folder and assistants: clients register their project at every
-    start.
+    Clients register their project at every start, and every registration
+    restores its threads: the runtime's registry learns of the threads a CLI
+    session made only from a restore. Once restored in this server process,
+    a restore that fails again is logged by the restore, not raised.
 
     Raises :class:`FolderMissingError` when the project's folder does not
     exist, and ``RuntimeError`` when its threads cannot be restored or its
     assistants created; a project that was not registered then stays so.
     """
     restored = dirs.workspace.key in sessions.RESTORED_WORKSPACES
-    await _set_up(dirs.workspace, restore=not restored)
+    await _set_up(dirs.workspace, restore=True, restored_before=restored)
     warm_up(dirs.workspace)
 
 

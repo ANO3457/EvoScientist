@@ -126,18 +126,53 @@ async def test_register_workspace_failed_setup_leaves_project_unregistered(
     assert ("warm up", workspace.key) not in setup_calls
 
 
-async def test_register_workspace_again_skips_restore(projects, setup_calls, workspace):
-    """Clients register their project at every start: its threads were
-    restored already, so only its folder and assistants are checked."""
+async def test_register_workspace_again_restores_threads(
+    projects, setup_calls, workspace
+):
+    """Clients register their project at every start: each registration adds
+    the threads CLI sessions made since the last one."""
     await workspace_setup.register_workspace(SessionDirs(workspace))
     setup_calls.clear()
 
     await workspace_setup.register_workspace(SessionDirs(workspace))
 
     assert setup_calls == [
+        ("restore", workspace.key),
         ("assistants", workspace.key),
         ("warm up", workspace.key),
     ]
+
+
+async def test_register_workspace_again_survives_failed_restore(
+    projects, setup_calls, monkeypatch, workspace
+):
+    await workspace_setup.register_workspace(SessionDirs(workspace))
+    setup_calls.clear()
+    failed = []
+
+    async def restore_fails(key):
+        failed.append(key)
+        return False
+
+    monkeypatch.setattr(workspace_setup, "restore_workspace_threads", restore_fails)
+    await workspace_setup.register_workspace(SessionDirs(workspace))
+
+    assert failed == [workspace.key]
+    assert setup_calls == [("assistants", workspace.key), ("warm up", workspace.key)]
+    assert projects.is_registered(workspace.key)
+
+
+async def test_register_workspace_checks_folder_before_restoring(
+    projects, setup_calls, workspace
+):
+    await workspace_setup.register_workspace(SessionDirs(workspace))
+    setup_calls.clear()
+    workspace.root.rmdir()
+
+    with pytest.raises(workspace_setup.FolderMissingError):
+        await workspace_setup.register_workspace(SessionDirs(workspace))
+
+    assert setup_calls == []
 
 
 async def test_register_workspace_restores_registered_project_not_restored(
