@@ -89,7 +89,10 @@ def start_background(workdir: str | None, *, with_ccproxy: bool) -> None:
         )
         raise typer.Exit(1)
     stop = "EvoSci service stop" if with_ccproxy else "EvoSci server stop"
-    start_cmd = "EvoSci service start" if with_ccproxy else "EvoSci server start"
+    start_cmd = (
+        f"EvoSci {'service' if with_ccproxy else 'server'} start "
+        f"--workdir {escape(str(project))}"
+    )
     url = langgraph_dev_url(config)
     # Of two starts at once, the one that lost the race for the port only
     # reused the other's server: this process started it only when it holds it.

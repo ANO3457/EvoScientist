@@ -322,12 +322,16 @@ def _offer_server_start() -> None:
     config = get_effective_config()
     port, host = manager.configured_address(config)
     if manager.is_langgraph_dev_running(port=port, host=host):
-        if manager.is_lasting(manager._read_workspace_sidecar()):
+        sidecar = manager._read_workspace_sidecar()
+        if manager.is_lasting(sidecar):
+            # From the project it was started from, which the WebUI opens.
+            workspace = escape(str(sidecar.get("workspace") or "<project>"))
             console.print(
                 "[dim]The background agent service runs with your previous "
                 "settings; to apply the new ones, restart it: [bold]EvoSci "
-                "service stop[/bold], then [bold]EvoSci service start[/bold] "
-                "(this ends its running background work).[/dim]"
+                "service stop[/bold], then [bold]EvoSci service start "
+                f"--workdir {workspace}[/bold] (this ends its running "
+                "background work).[/dim]"
             )
         else:
             console.print(
