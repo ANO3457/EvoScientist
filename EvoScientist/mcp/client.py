@@ -891,16 +891,43 @@ def load_mcp_config() -> dict[str, Any]:
     return _interpolate_value(data)
 
 
-def _resolve_command(command: str) -> str:
+def _server_path(server: dict[str, Any]) -> str | None:
+    """The ``PATH`` a stdio server sets in its ``mcp.yaml`` env, or None. On
+    POSIX the server's bare command is searched there when it starts."""
+    env = server.get("env")
+    if not isinstance(env, dict):
+        return None
+    for key, value in env.items():
+        if isinstance(key, str) and key.upper() == "PATH" and isinstance(value, str):
+            return value
+    return None
+
+
+def _node_command_on_path(command: str, server_path: str | None) -> str | None:
+    """A bare ``node`` / ``npx`` / ``npm`` on the server's own ``PATH`` (from
+    ``mcp.yaml``), else on ours, or None. Never the current directory: on
+    Windows shutil.which() would return an npx.cmd found there."""
+    from ..setup._install import which_on_path
+
+    found = which_on_path(command, path=server_path) if server_path else None
+    return found or which_on_path(command)
+
+
+def _resolve_command(command: str, server_path: str | None = None) -> str:
     """Resolve a stdio command to its full path.
 
     Checks PATH first, then the current Python environment's bin directory
     (handles conda/venv envs where newly installed binaries may not be on PATH).
     Returns the original command string if not found (let the OS report the error).
+    A ``node`` / ``npx`` / ``npm`` is looked up on ``server_path`` (the server's
+    own ``PATH``) first, see :func:`_node_command_on_path`.
     """
     if os.path.isabs(command):
         return command
-    found = shutil.which(command)
+    if not os.path.dirname(command) and Path(command).stem.lower() in _NODE_COMMANDS:
+        found = _node_command_on_path(command, server_path)
+    else:
+        found = shutil.which(command)
     if found:
         return found
     candidate = os.path.join(os.path.dirname(sys.executable), command)
@@ -930,8 +957,11 @@ def _ensure_node_for_stdio(config: dict[str, Any]) -> None:
         if server.get("transport") == "stdio"
         and (command := str(server.get("command", "")))
         and not os.path.isabs(command)
+        # A path with a folder part (node_modules/.bin/npx) is not looked up
+        # on PATH.
+        and not os.path.dirname(command)
         and Path(command).stem.lower() in _NODE_COMMANDS
-        and shutil.which(command) is None
+        and _node_command_on_path(command, _server_path(server)) is None
     ]
     if not missing:
         return
@@ -960,6 +990,23 @@ def _ensure_node_for_stdio(config: dict[str, Any]) -> None:
     activate_runtime()
 
 
+def _unresolved_node_servers(config: dict[str, Any]) -> list[str]:
+    """Stdio servers whose bare ``node`` / ``npx`` / ``npm`` command is not on
+    ``PATH``, theirs (from ``mcp.yaml``) or ours. Started anyway, the OS would take that command from the current
+    directory (Windows, or a ``.`` entry on POSIX), which the lookup never
+    searches, so they are reported as failed instead."""
+    return [
+        name
+        for name, server in config.items()
+        if server.get("transport") == "stdio"
+        and (command := str(server.get("command", "")))
+        # A path with a folder part (node_modules/.bin/npx) is started as written.
+        and not os.path.dirname(command)
+        and Path(command).stem.lower() in _NODE_COMMANDS
+        and _resolve_command(command, _server_path(server)) == command
+    ]
+
+
 def _build_connections(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Convert YAML config to ``MultiServerMCPClient`` connections format.
 
@@ -973,7 +1020,9 @@ def _build_connections(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if transport == "stdio":
             conn: dict[str, Any] = {
                 "transport": "stdio",
-                "command": _resolve_command(server.get("command", "")),
+                "command": _resolve_command(
+                    server.get("command", ""), _server_path(server)
+                ),
                 "args": server.get("args", []),
             }
             forwarded = {
@@ -1132,11 +1181,10 @@ async def _load_tools(
     # May download Node (in the CLI process only); off the event loop so the
     # running session stays responsive.
     await asyncio.to_thread(_ensure_node_for_stdio, config)
-    connections = _build_connections(config)
-    if not connections:
-        return {}
-
-    client = MultiServerMCPClient(connections)  # type: ignore[invalid-argument-type]
+    unresolved = _unresolved_node_servers(config)
+    connections = _build_connections(
+        {name: server for name, server in config.items() if name not in unresolved}
+    )
 
     def _report(event: str, name: str, detail: str = "") -> None:
         if on_progress is None:
@@ -1147,6 +1195,31 @@ async def _load_tools(
             # Progress callbacks are UI glue — never let their bugs break
             # the actual MCP load.
             logger.debug("MCP progress callback raised", exc_info=True)
+
+    def _fail(name: str, detail: str) -> tuple[str, list]:
+        # When the caller wired up ``on_progress`` they own the
+        # user-facing display; downgrade the logger so we don't
+        # double-print.
+        if on_progress is None:
+            logger.warning("MCP server %r: failed to load tools: %s", name, detail)
+        else:
+            logger.debug("MCP server %r: failed to load tools: %s", name, detail)
+        _report("error", name, detail)
+        return name, []
+
+    skipped: dict[str, list] = {}
+    for name in unresolved:
+        _report("start", name)
+        command = config[name]["command"]
+        _fail(
+            name,
+            f"{command} was not found on PATH. Run 'EvoSci setup' to install Node.js",
+        )
+        skipped[name] = []
+    if not connections:
+        return skipped
+
+    client = MultiServerMCPClient(connections)  # type: ignore[invalid-argument-type]
 
     # Cap in-flight connections so a user with many servers doesn't
     # spawn all their stdio subprocesses at once (fd/ulimit pressure,
@@ -1182,24 +1255,12 @@ async def _load_tools(
                     detail = f"timed out after {server_timeout}s"
                 else:
                     detail = str(exc)
-                # When the caller wired up ``on_progress`` they own the
-                # user-facing display; downgrade the logger so we don't
-                # double-print.
-                if on_progress is None:
-                    logger.warning(
-                        "MCP server %r: failed to load tools: %s", name, detail
-                    )
-                else:
-                    logger.debug(
-                        "MCP server %r: failed to load tools: %s", name, detail
-                    )
-                _report("error", name, detail)
-                return name, []
+                return _fail(name, detail)
 
     # ``return_exceptions=False`` is fine because ``_fetch`` already
     # swallows errors per server.
     results = await asyncio.gather(*(_fetch(name) for name in connections))
-    return dict(results)
+    return {**skipped, **dict(results)}
 
 
 async def aload_mcp_tools(
