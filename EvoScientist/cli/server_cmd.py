@@ -73,8 +73,6 @@ def start_background(workdir: str | None, *, with_ccproxy: bool) -> None:
         start_workspace_path(workdir, config.default_workdir)
     )
     oauth = uses_oauth(config)
-    port, host = manager.configured_address(config)
-    was_running = manager.is_langgraph_dev_running(port=port, host=host)
     try:
         with console.status(
             "[dim]Starting the background agent server...[/dim]", spinner="dots"
@@ -93,7 +91,9 @@ def start_background(workdir: str | None, *, with_ccproxy: bool) -> None:
     stop = "EvoSci service stop" if with_ccproxy else "EvoSci server stop"
     start_cmd = "EvoSci service start" if with_ccproxy else "EvoSci server start"
     url = langgraph_dev_url(config)
-    if was_running:
+    # Of two starts at once, the one that lost the race for the port only
+    # reused the other's server: this process started it only when it holds it.
+    if manager._PROCESS is None:
         console.print(
             f"[green]✓[/green] The background agent server at {url} was already "
             f"running; it serves {escape(str(project))} too."
@@ -125,6 +125,7 @@ def server_status() -> None:
     """Show the background langgraph dev server's state."""
     from ..config import get_effective_config
     from ..langgraph_dev.manager import (
+        _langgraph_cmdline,
         _pid_serves_port,
         _read_workspace_sidecar,
         configured_address,
@@ -146,6 +147,17 @@ def server_status() -> None:
         pid = sidecar.get("pid")
         if _pid_serves_port(pid, port):
             console.print(f"  pid:          {pid}")
+        elif (cmdline := _langgraph_cmdline(pid)) is not None:
+            # langgraph_dev_port changed while it ran.
+            served = (
+                f"port {cmdline[cmdline.index('--port') + 1]}"
+                if "--port" in cmdline[:-1]
+                else "another port"
+            )
+            console.print(
+                f"  pid:          {pid} [yellow](serves {served}, not port "
+                f"{port}; EvoSci server stop stops it)[/yellow]"
+            )
         else:
             console.print(
                 f"  pid:          {pid} [yellow](stale record — this pid does "
@@ -161,17 +173,29 @@ def server_status() -> None:
 @server_app.command("stop")
 def server_stop() -> None:
     """Stop the background langgraph dev server started by EvoSci."""
+    stop_server()
+
+
+def stop_server(*, keep_owned: bool = False) -> bool:
+    """``EvoSci server stop``; with *keep_owned* (``EvoSci service stop``), a
+    server that ``EvoSci deploy`` or the desktop app owns, or that another
+    process is starting or stopping, is left running. Whether it was."""
     from ..config import get_effective_config
     from ..langgraph_dev.manager import (
+        ServerKeptError,
         configured_address,
         is_langgraph_dev_running,
         stop_recorded_server,
     )
 
-    pid = stop_recorded_server()
+    try:
+        pid = stop_recorded_server(keep_owned=keep_owned)
+    except ServerKeptError as exc:
+        console.print(f"[yellow]⚠ {escape(str(exc))}[/yellow]")
+        return True
     if pid is not None:
         console.print(f"[green]✓[/green] Stopped langgraph dev (pid {pid}).")
-        return
+        return False
     config = get_effective_config()
     port, host = configured_address(config)
     if is_langgraph_dev_running(port=port, host=host):
@@ -192,3 +216,4 @@ def server_stop() -> None:
             "[dim]No EvoSci-owned langgraph dev server to stop "
             "(stale state, if any, was cleaned up).[/dim]"
         )
+    return False

@@ -729,7 +729,13 @@ def _server_config_fingerprint(config: EvoScientistConfig) -> str:
     return digest.hexdigest()[:16]
 
 
-def stop_recorded_server() -> int | None:
+class ServerKeptError(RuntimeError):
+    """``EvoSci service stop`` left the recorded server running: ``EvoSci
+    deploy`` or the desktop app owns it, or another EvoSci process is starting
+    or stopping it."""
+
+
+def stop_recorded_server(*, keep_owned: bool = False) -> int | None:
     """Explicitly stop the langgraph dev recorded in our PID file.
 
     Backs the user-facing ``EvoSci server stop`` command: a server that
@@ -741,11 +747,30 @@ def stop_recorded_server() -> int | None:
     wiped by this stop's cleanup. Kills the whole process tree, then removes
     the PID file + sidecar. Returns the stopped pid, or ``None`` when nothing
     was stopped (stale/corrupt files, if any, are still cleaned up).
+
+    With *keep_owned* (``EvoSci service stop``), a live server that ``EvoSci
+    deploy`` or the desktop app owns is left running, and so is one whose lock
+    another process holds too long: :class:`ServerKeptError`. A record of an
+    older release, which does not say, is stopped.
     """
     try:
         with FileLock(str(RUNTIME.lock_file), timeout=_FILE_LOCK_TIMEOUT):
+            if keep_owned:
+                sidecar = _read_workspace_sidecar()
+                owned = sidecar is not None and sidecar.get("lasting") is False
+                if owned and _langgraph_cmdline(sidecar.get("pid")) is not None:
+                    raise ServerKeptError(
+                        "The running server is not the background service: an "
+                        "EvoSci deploy or the desktop app owns it, so it was left "
+                        "running (EvoSci server stop stops it anyway)."
+                    )
             return _stop_recorded_server_locked()
     except FileLockTimeout:
+        if keep_owned:
+            raise ServerKeptError(
+                "Another EvoSci process is starting or stopping the server, so "
+                "it was left running; try again in a moment."
+            ) from None
         logger.warning(
             "Timed out waiting for the langgraph dev lock — another EvoSci "
             "process is mid lifecycle change; not stopping anything."
@@ -838,13 +863,20 @@ def _pid_serves_port(pid: object, port: int) -> bool:
     ``--port`` always being in ``start_langgraph_dev``'s argv, not on
     port→PID mapping (root-only on macOS via psutil).
     """
+    cmdline = _langgraph_cmdline(pid)
+    return cmdline is not None and str(port) in cmdline
+
+
+def _langgraph_cmdline(pid: object) -> list[str] | None:
+    """The command line of ``pid`` while it is a live langgraph dev, on any
+    port; ``None`` otherwise."""
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        return False
+        return None
     try:
         cmdline = psutil.Process(pid).cmdline()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return False
-    return any("langgraph" in arg for arg in cmdline) and str(port) in cmdline
+        return None
+    return cmdline if any("langgraph" in arg for arg in cmdline) else None
 
 
 def _packaged_langgraph_config() -> Path:

@@ -12,7 +12,7 @@ import typer  # type: ignore[import-untyped]
 
 from ..stream.console import console
 from ._app import ccproxy_app, service_app
-from .server_cmd import server_status, server_stop, start_background
+from .server_cmd import server_status, start_background, stop_server
 
 
 @service_app.command("start")
@@ -32,8 +32,18 @@ def service_start(
 
 @service_app.command("stop")
 def service_stop() -> None:
-    """Stop the background agent service: the server and ccproxy."""
-    server_stop()
+    """Stop the background agent service: the server and ccproxy. A server
+    that EvoSci deploy or the desktop app owns is left running, with the
+    ccproxy it may route through."""
+    if stop_server(keep_owned=True):
+        from ..ccproxy_manager import recorded_ccproxy_running
+
+        if recorded_ccproxy_running() is not None:
+            console.print(
+                "[dim]ccproxy was left running too, since that server may route "
+                "through it; EvoSci ccproxy stop stops it.[/dim]"
+            )
+        return
     ccproxy_stop()
 
 
