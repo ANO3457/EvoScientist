@@ -538,7 +538,6 @@ main() {
   fi
   info "Next steps:"
   info "  EvoSci onboard          set up your model provider and API keys"
-  info "  EvoSci service start    start the background agent service, shared by every session"
   info "  EvoSci                  start the terminal UI"
   info "  EvoSci --ui webui       start the WebUI"
 }

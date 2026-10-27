@@ -309,9 +309,9 @@ def onboard(
 
 
 def _offer_server_start() -> None:
-    """After onboarding: offer to start the background agent service, from
-    ``default_workdir`` or the current folder. A running one keeps the
-    settings it started with; say how to apply the new ones."""
+    """After onboarding: offer to start the background agent service from
+    ``default_workdir``. A running one keeps the settings it started with;
+    say how to apply the new ones."""
     import questionary
 
     from ..config import get_effective_config
@@ -335,6 +335,11 @@ def _offer_server_start() -> None:
                 "port (an EvoSci deploy, the desktop app or an older release); "
                 "the new settings apply once it restarts.[/dim]"
             )
+        return
+    if not config.default_workdir:
+        # Started from the folder onboarding ran in (often the home folder),
+        # it would pin the WebUI and the desktop app to that folder's project;
+        # the first session in a project starts it instead.
         return
     project = start_workspace_path(None, config.default_workdir)
     answer = questionary.confirm(

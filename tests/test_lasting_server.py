@@ -116,7 +116,7 @@ def _answer(monkeypatch, answer):
 def test_offer_service_start_names_project(monkeypatch, tmp_path, answer):
     from EvoScientist.cli import commands, server_cmd
 
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("EVOSCIENTIST_WORKSPACE_DIR", str(tmp_path))
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_k: False)
     asked = _answer(monkeypatch, answer)
     starts = []
@@ -130,6 +130,27 @@ def test_offer_service_start_names_project(monkeypatch, tmp_path, answer):
 
     assert str(tmp_path) in asked[0]
     assert starts == ([True] if answer else [])
+
+
+def test_offer_without_default_workdir_starts_nothing(monkeypatch, tmp_path):
+    """The folder onboarding ran in is not the project the user works in."""
+    from EvoScientist.cli import commands, server_cmd
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("EVOSCIENTIST_WORKSPACE_DIR", raising=False)
+    monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_k: False)
+    asked = _answer(monkeypatch, True)
+    starts = []
+    monkeypatch.setattr(
+        server_cmd,
+        "start_background",
+        lambda workdir, *, with_ccproxy: starts.append(with_ccproxy),
+    )
+
+    commands._offer_server_start()
+
+    assert asked == []
+    assert starts == []
 
 
 def _running_service(monkeypatch, sidecar, *, jobs=(), busy=False):
@@ -181,10 +202,11 @@ def test_offer_leaves_running_service_alone(monkeypatch, sidecar):
     assert hint in " ".join(captured.get().split())
 
 
-def test_offer_service_start_failure_is_reported(monkeypatch):
+def test_offer_service_start_failure_is_reported(monkeypatch, tmp_path):
     """The configuration is saved; no traceback."""
     from EvoScientist.cli import commands, server_cmd
 
+    monkeypatch.setenv("EVOSCIENTIST_WORKSPACE_DIR", str(tmp_path))
     monkeypatch.setattr(manager, "is_langgraph_dev_running", lambda **_k: False)
     _answer(monkeypatch, True)
 
