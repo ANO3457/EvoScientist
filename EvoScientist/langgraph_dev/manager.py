@@ -958,11 +958,9 @@ def _set_by_flag(env_key: str) -> bool:
 # The flags a lasting server still takes from the session that starts it.
 # The auth mode picks the credentials its requests use, of which one server
 # has one set: the starter's choice stands, and a later session with another
-# one sees the drift warning. (With Anthropic OAuth, ccproxy's variables carry
-# the choice to the server either way.)
-_FLAGS_SERVER_TAKES = frozenset(
-    {"EVOSCIENTIST_OPENAI_AUTH_MODE", "EVOSCIENTIST_ANTHROPIC_AUTH_MODE"}
-)
+# one sees the drift warning. (--auth-mode for Anthropic writes no variable:
+# with OAuth, ccproxy's variables carry the choice to the server.)
+_FLAGS_SERVER_TAKES = frozenset({"EVOSCIENTIST_OPENAI_AUTH_MODE"})
 
 
 def _withheld_flag(env_key: str) -> bool:
