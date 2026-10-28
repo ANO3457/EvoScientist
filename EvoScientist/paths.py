@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,18 +15,55 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _darwin_stored_path(path: Path) -> Path:
+    """Return *path* with existing components spelled as stored on disk (macOS).
+
+    On case-insensitive APFS, ``Path.resolve()`` resolves symlinks but keeps the
+    spelling the caller typed. ``fcntl(fd, F_GETPATH)`` asks the kernel for the
+    stored entry name of the deepest existing prefix so ``~/Project`` and
+    ``~/project`` resolve to the same :attr:`Workspace.key`.
+    """
+    import fcntl
+
+    f_getpath = getattr(fcntl, "F_GETPATH", 50)
+    missing: list[str] = []
+    current = path
+    while True:
+        try:
+            fd = os.open(current, os.O_RDONLY)
+        except OSError:
+            if current.parent == current:
+                return path
+            missing.append(current.name)
+            current = current.parent
+        else:
+            try:
+                raw = fcntl.fcntl(fd, f_getpath, bytes(1024))
+            except (OSError, ValueError):
+                return path
+            finally:
+                os.close(fd)
+            stored = Path(os.fsdecode(raw.split(b"\x00", 1)[0]))
+            return stored.joinpath(*reversed(missing)) if missing else stored
+
+
 def normalize_path(path: str | Path) -> Path:
     """Return the canonical absolute form of *path*.
 
     Expands ``~`` and resolves symlinks, so ``/tmp/x`` and ``/private/tmp/x``
     on macOS, or two spellings of a symlinked project folder, compare equal.
+    On macOS, existing components are spelled as stored on disk so two case
+    variants of the same folder share one :attr:`Workspace.key`.
     The path does not need to exist. Raises ``ValueError`` for a path with a
     NUL byte, which no platform accepts (Windows on Python 3.13 would
     otherwise resolve it without complaint).
     """
     if "\x00" in str(path):
         raise ValueError(f"Path contains a NUL byte: {path!r}")
-    return Path(path).expanduser().resolve()
+    resolved = Path(path).expanduser().resolve()
+    if sys.platform == "darwin":
+        return _darwin_stored_path(resolved)
+    return resolved
 
 
 def file_tool_path(path: str | Path) -> str:

@@ -116,6 +116,56 @@ class TestNormalizePath:
         with pytest.raises(ValueError, match="NUL byte"):
             normalize_path(f"{tmp_path}/evil\x00x")
 
+    def test_darwin_canonicalises_stored_case_via_f_getpath(
+        self, tmp_path, monkeypatch
+    ):
+        """#692: on macOS, ``Workspace('~/Project')`` and ``Workspace('~/project')``
+        must resolve to the on-disk spelling returned by ``fcntl(fd, F_GETPATH)``."""
+        import sys
+        import types
+
+        stored_dir = tmp_path.resolve() / "Project"
+        typed_dir = tmp_path.resolve() / "project"
+
+        real_open = os.open
+        real_close = os.close
+        sentinel_fd = 99991
+
+        def fake_open(target, flags, *args, **kwargs):
+            p = Path(target)
+            if p in (stored_dir, typed_dir):
+                return sentinel_fd
+            return real_open(target, flags, *args, **kwargs)
+
+        def fake_close(fd):
+            if fd == sentinel_fd:
+                return
+            real_close(fd)
+
+        def fake_fcntl(fd, cmd, arg=0):
+            assert cmd == 50
+            if fd == sentinel_fd:
+                raw = os.fsencode(str(stored_dir)) + b"\x00"
+                return raw.ljust(1024, b"\x00")
+            raise OSError("unexpected fd")
+
+        fake_fcntl_mod = types.SimpleNamespace(F_GETPATH=50, fcntl=fake_fcntl)
+        monkeypatch.setattr(paths.sys, "platform", "darwin")
+        monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl_mod)
+        monkeypatch.setattr(paths.os, "open", fake_open)
+        monkeypatch.setattr(paths.os, "close", fake_close)
+
+        ws_upper = Workspace(stored_dir)
+        ws_lower = Workspace(typed_dir)
+        assert ws_lower == ws_upper
+        assert ws_lower.key == ws_upper.key == stored_dir.as_posix()
+
+        # Non-existent child folders under a differently-cased existing parent
+        # still inherit the parent's stored on-disk case without creating dirs.
+        child = Workspace(typed_dir / "runs" / "20260930_120000")
+        assert child.key == (stored_dir / "runs" / "20260930_120000").as_posix()
+        assert not (stored_dir / "runs").exists()
+
 
 class TestStartWorkspacePath:
     """Which folder a process starts in: workdir, then default_workdir, then cwd."""
