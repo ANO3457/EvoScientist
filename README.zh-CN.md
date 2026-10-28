@@ -380,7 +380,31 @@ docker run -it --rm \
 镜像不包含 agent 使用的研究用 Python；请在挂载同一个 `evosci-data` 卷的容器里运行一次 `EvoSci setup`（镜像的入口是 `evosci`，所以用 `docker run --rm -v evosci-data:/home/evosci/.evoscientist ghcr.io/evoscientist/evoscientist:latest setup`；使用 compose 时为 `docker compose run --rm evoscientist setup`），它会把环境建在这个卷里，镜像升级后依然保留。
 
 > [!IMPORTANT]
-> 镜像以非 root 用户运行（`evosci`，UID `1000`）。`./workspace` bind 挂载的宿主目录必须可被该 UID 写入。如果你的宿主用户 ID 不同，可以一次性 `chown -R 1000:1000 ./workspace`，或在每次 `docker run` 时加上 `--user "$(id -u):$(id -g)"`，让容器使用你的 UID。
+> 镜像以非 root 用户运行（`evosci`，UID `1000`）。在 Linux 宿主机上：
+>
+> - 首次运行前先执行 `mkdir -p workspace` 创建工作目录。否则 Docker 会以 `root` 身份创建它，即使 UID 是 `1000`，容器也无法写入。
+> - 如果你以 `root` 身份操作，创建后执行一次 `chown -R 1000:1000 ./workspace` 即可。下面的构建不支持 UID `0`，而 `root` 之后仍能在宿主机上修改这些文件。
+> - 如果你的宿主用户 ID 既不是 `1000` 也不是 `0`，请在本仓库的克隆目录中以你自己的 UID 构建镜像，这样宿主机和容器都能写入 `./workspace`：
+>
+>   ```bash
+>   docker build --build-arg UID="$(id -u)" -t evoscientist:local .
+>   ```
+>
+>   之后用 `evoscientist:local` 代替官方镜像（包括运行 `setup` 时）；使用 compose 时，在 `docker-compose.yml` 中设置 `image: evoscientist:local`。如果你之前用过官方镜像，请一次性把数据卷交给你的 UID：
+>
+>   ```bash
+>   docker run --rm --user 0 --entrypoint chown -v evosci-data:/home/evosci/.evoscientist evoscientist:local -R "$(id -u):$(id -g)" /home/evosci/.evoscientist
+>   ```
+>
+>   使用 compose 时，请改为通过 compose 运行（先设置 `image: evoscientist:local`），因为 compose 会把卷命名为 `<project>_evosci-data`：
+>
+>   ```bash
+>   docker compose run --rm --user 0 --entrypoint chown evoscientist -R "$(id -u):$(id -g)" /home/evosci/.evoscientist
+>   ```
+>
+>   也可以一次性执行 `sudo chown -R 1000:1000 ./workspace`，但之后在宿主机上修改这些文件需要 `sudo`。
+>
+> Docker Desktop（macOS、Windows）通常会自行处理 bind 挂载权限，无需这些步骤。除了上面一次性的 `chown` 命令，不要给 `docker run` 传 `--user`，也不要在 compose 中设置 `user:`：镜像的数据和配置保存在 `/home/evosci/.evoscientist`，该目录属于构建时的 UID，其他 UID 运行会因 `Permission denied` 而失败。
 
 也可使用 `docker compose`（仓库自带一个起步用的 [`docker-compose.yml`](./docker-compose.yml)；它从同目录下你自己创建的 `.env` 文件读取 API 密钥，每行一个 `NAME=value`）：
 

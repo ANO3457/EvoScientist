@@ -361,7 +361,31 @@ What the mounts are for:
 The image does not include the agent's research Python; run `EvoSci setup` once in a container with the same `evosci-data` mount (`docker run --rm -v evosci-data:/home/evosci/.evoscientist ghcr.io/evoscientist/evoscientist:latest setup`, since the image's entrypoint is `evosci`; with compose, `docker compose run --rm evoscientist setup`), and it builds the environment in that volume, where it survives image upgrades.
 
 > [!IMPORTANT]
-> The image runs as a non-root user (`evosci`, UID `1000`). For the `./workspace` bind mount, the host directory must be writable by that UID. If your host user ID differs, either `chown -R 1000:1000 ./workspace` once, or pass `--user "$(id -u):$(id -g)"` on every `docker run` so the container takes on your UID.
+> The image runs as a non-root user (`evosci`, UID `1000`). On Linux hosts:
+>
+> - Create the workspace before the first run with `mkdir -p workspace`. Otherwise Docker creates it as `root` and the container can't write to it, even with UID `1000`.
+> - If you work as `root`, run `chown -R 1000:1000 ./workspace` once after creating it. The build below doesn't work for UID `0`, and as `root` you can still edit those files from the host.
+> - If your host user ID is neither `1000` nor `0`, build the image as yourself from a clone of this repository, so the host and the container can both write to `./workspace`:
+>
+>   ```bash
+>   docker build --build-arg UID="$(id -u)" -t evoscientist:local .
+>   ```
+>
+>   Then use `evoscientist:local` in place of the published image, including for `setup`; with compose, set `image: evoscientist:local` in `docker-compose.yml`. If you already used the published image, hand the data volume to your UID once:
+>
+>   ```bash
+>   docker run --rm --user 0 --entrypoint chown -v evosci-data:/home/evosci/.evoscientist evoscientist:local -R "$(id -u):$(id -g)" /home/evosci/.evoscientist
+>   ```
+>
+>   With compose, run it through compose instead (after setting `image: evoscientist:local`), since compose names the volume `<project>_evosci-data`:
+>
+>   ```bash
+>   docker compose run --rm --user 0 --entrypoint chown evoscientist -R "$(id -u):$(id -g)" /home/evosci/.evoscientist
+>   ```
+>
+>   Alternatively, run `sudo chown -R 1000:1000 ./workspace` once, but you'll then need `sudo` to change those files from the host.
+>
+> Docker Desktop (macOS, Windows) generally handles bind-mount permissions itself, so these steps are not needed there. Apart from the one-off `chown` commands above, don't pass `--user` to `docker run` or set `user:` in compose: the image keeps its data and config under `/home/evosci/.evoscientist`, which belongs to the build-time UID, so any other UID fails with `Permission denied`.
 
 Or use `docker compose` (a starter [`docker-compose.yml`](./docker-compose.yml) is included; it reads your API keys from a `.env` file next to it, one `NAME=value` per line, which you create):
 
