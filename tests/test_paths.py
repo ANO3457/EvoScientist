@@ -1,6 +1,7 @@
 """Tests for EvoScientist.paths — the Workspace type, start resolution, ensure_dirs."""
 
 import os
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -121,7 +122,6 @@ class TestNormalizePath:
     ):
         """#692: on macOS, ``Workspace('~/Project')`` and ``Workspace('~/project')``
         must resolve to the on-disk spelling returned by ``fcntl(fd, F_GETPATH)``."""
-        import sys
         import types
 
         stored_dir = tmp_path.resolve() / "Project"
@@ -133,6 +133,7 @@ class TestNormalizePath:
 
         def fake_open(target, flags, *args, **kwargs):
             p = Path(target)
+            assert flags & os.O_NONBLOCK
             if p in (stored_dir, typed_dir):
                 return sentinel_fd
             return real_open(target, flags, *args, **kwargs)
@@ -623,3 +624,28 @@ def test_command_arg_quotes_path_with_whitespace_on_windows(path, shown):
     from EvoScientist.paths import command_arg
 
     assert command_arg(path) == shown
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS filesystem")
+def test_darwin_stored_case_and_run_directories(tmp_path):
+    """Real APFS spellings preserve project identity and resumed run folders."""
+    (tmp_path / "Project" / "Runs").mkdir(parents=True)
+    if not (tmp_path / "project" / "runs").exists():
+        pytest.skip("case-sensitive volume")
+    typed = Workspace(tmp_path / "project")
+    assert typed.key == Workspace(tmp_path / "Project").key
+    assert typed.root.name == "Project"
+    run = typed.runs_dir / "20260930_120000"
+    assert typed.is_run_folder(run)
+    assert SessionDirs.from_stored(typed.key, run).run_dir is not None
+    assert SessionDirs.from_legacy(run).run_dir is not None
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS F_GETPATH")
+@pytest.mark.parametrize("child", [False, True])
+def test_darwin_fifo_path_does_not_block(tmp_path, child):
+    """A real FIFO or a missing child under it must not wait for a writer."""
+    fifo = tmp_path / "Pipe"
+    os.mkfifo(fifo)
+    candidate = fifo / "missing" if child else fifo
+    assert normalize_path(candidate) == candidate.resolve()
