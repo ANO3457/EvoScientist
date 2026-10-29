@@ -26,6 +26,8 @@ def _darwin_stored_path(path: Path) -> Path:
         try:
             fd = os.open(current, os.O_RDONLY | os.O_NONBLOCK)
         except OSError:
+            # Fallback to parent walk is deliberate: components that do not exist or cannot
+            # be opened (e.g. EACCES without read permission) keep their typed spelling.
             if current.parent == current:
                 return path
             missing.append(current.name)
@@ -46,6 +48,9 @@ def normalize_path(path: str | Path) -> Path:
 
     Expands ``~`` and resolves symlinks, so ``/tmp/x`` and ``/private/tmp/x``
     on macOS, or two spellings of a symlinked project folder, compare equal.
+    On macOS, the existing part of the path is spelled as stored on disk (so
+    ``~/research`` and ``~/Research`` compare equal) and the missing tail
+    keeps the typed spelling.
     The path does not need to exist. Raises ``ValueError`` for a path with a
     NUL byte, which no platform accepts (Windows on Python 3.13 would
     otherwise resolve it without complaint).

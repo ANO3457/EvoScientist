@@ -143,14 +143,16 @@ class TestNormalizePath:
                 return
             real_close(fd)
 
+        fake_fcntl_mod = types.SimpleNamespace(F_GETPATH=50)
+
         def fake_fcntl(fd, cmd, arg=0):
-            assert cmd == 50
+            assert cmd == fake_fcntl_mod.F_GETPATH
             if fd == sentinel_fd:
                 raw = os.fsencode(str(stored_dir)) + b"\x00"
                 return raw.ljust(1024, b"\x00")
             raise OSError("unexpected fd")
 
-        fake_fcntl_mod = types.SimpleNamespace(F_GETPATH=50, fcntl=fake_fcntl)
+        fake_fcntl_mod.fcntl = fake_fcntl
         # Simulate the Darwin open flag too: Windows does not expose it.
         monkeypatch.setattr(
             paths.os, "O_NONBLOCK", getattr(os, "O_NONBLOCK", 0x800), raising=False
