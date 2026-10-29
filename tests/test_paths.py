@@ -151,6 +151,10 @@ class TestNormalizePath:
             raise OSError("unexpected fd")
 
         fake_fcntl_mod = types.SimpleNamespace(F_GETPATH=50, fcntl=fake_fcntl)
+        # Simulate the Darwin open flag too: Windows does not expose it.
+        monkeypatch.setattr(
+            paths.os, "O_NONBLOCK", getattr(os, "O_NONBLOCK", 0x800), raising=False
+        )
         monkeypatch.setattr(paths.sys, "platform", "darwin")
         monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl_mod)
         monkeypatch.setattr(paths.os, "open", fake_open)
